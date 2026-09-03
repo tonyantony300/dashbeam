@@ -290,6 +290,23 @@ jobs:
           fi
           echo "All notarization secrets present"
 
+      - name: Configure Linux AppImage update information
+        if: contains(matrix.platform, 'ubuntu')
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "${{ matrix.arch }}" in
+            x86_64) APPIMAGE_RELEASE_ARCH=amd64 ;;
+            aarch64) APPIMAGE_RELEASE_ARCH=aarch64 ;;
+            *)
+              echo "ERROR: unsupported Linux AppImage architecture: ${{ matrix.arch }}"
+              exit 1
+              ;;
+          esac
+          REPOSITORY="${GITHUB_REPOSITORY#*/}"
+          LDAI_UPDATE_INFORMATION="gh-releases-zsync|${GITHUB_REPOSITORY_OWNER}|${REPOSITORY}|latest|DashBeam_${VERSION}_${APPIMAGE_RELEASE_ARCH}.AppImage.zsync"
+          echo "LDAI_UPDATE_INFORMATION=${LDAI_UPDATE_INFORMATION}" >> "$GITHUB_ENV"
+
       # Retries only help transient latest.json upload races. Keep low — each attempt
       # re-runs the full tauri build (wasm + frontend + rust + bundles), which turned a
       # deterministic WiX/MSI failure into ~40+ minutes of useless rebuilds.
@@ -316,6 +333,39 @@ jobs:
           prerelease: false
           uploadUpdaterJson: true
           retryAttempts: 2
+
+      - name: Verify and upload Linux AppImage update sidecar
+        if: contains(matrix.platform, 'ubuntu')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          RELEASE_TAG="$GITHUB_REF_NAME"
+          export GH_REPO="$GITHUB_REPOSITORY"
+          shopt -s nullglob
+          SIDECARS=(src-tauri/target/release/bundle/appimage/*.AppImage.zsync)
+          if [ "${#SIDECARS[@]}" -ne 1 ]; then
+            echo "ERROR: expected exactly one Linux AppImage zsync sidecar, found ${#SIDECARS[@]}"
+            exit 1
+          fi
+
+          SIDECAR="${SIDECARS[0]}"
+          APPIMAGE="${SIDECAR%.zsync}"
+          EXPECTED_SIDECAR="${LDAI_UPDATE_INFORMATION##*|}"
+          if [ ! -f "$APPIMAGE" ] || [ "$(basename "$SIDECAR")" != "$EXPECTED_SIDECAR" ]; then
+            echo "ERROR: zsync sidecar does not match the expected AppImage update information"
+            exit 1
+          fi
+
+          UPD_INFO_DUMP="$(readelf --string-dump=.upd_info "$APPIMAGE")"
+          mapfile -t EMBEDDED_UPD_INFO < <(sed -n 's/^[[:space:]]*\[[^]]*\][[:space:]]*//p' <<< "$UPD_INFO_DUMP")
+          if [ "${#EMBEDDED_UPD_INFO[@]}" -ne 1 ] || [ "${EMBEDDED_UPD_INFO[0]}" != "$LDAI_UPDATE_INFORMATION" ]; then
+            echo "ERROR: AppImage .upd_info does not exactly match LDAI_UPDATE_INFORMATION"
+            exit 1
+          fi
+
+          gh release upload "$RELEASE_TAG" "$SIDECAR" --clobber
 
       - name: Package Windows portable ZIP
         if: matrix.platform == 'windows-latest'
