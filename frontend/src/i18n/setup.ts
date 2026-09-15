@@ -1,3 +1,5 @@
+import { resolveLanguage } from '../lib/language-detection'
+
 export interface TranslationResources {
 	[language: string]: {
 		[namespace: string]: {
@@ -43,14 +45,30 @@ Object.entries(localeFiles).forEach(([path, module]) => {
 	}
 })
 
-const getStoredLanguage = (): string => {
+const getStoredLanguage = (): string | null => {
 	try {
-		const stored = localStorage.getItem('altsendme-language')
-		return stored || 'en'
+		return localStorage.getItem('altsendme-language')
 	} catch {
-		return 'en'
+		return null
 	}
 }
+
+const getSystemLanguages = (): readonly string[] => {
+	if (typeof navigator === 'undefined') {
+		return []
+	}
+	return navigator.languages?.length
+		? navigator.languages
+		: [navigator.language].filter(Boolean)
+}
+
+export const getInitialLanguage = (): string =>
+	resolveLanguage({
+		stored: getStoredLanguage(),
+		preferred: getSystemLanguages(),
+		available: Object.keys(resources),
+		fallback: 'en',
+	})
 
 const translate = (
 	key: string,
@@ -111,7 +129,7 @@ const changeLanguage = (lng: string): void => {
 }
 
 const initI18n = (): I18nInstance => {
-	const currentLanguage = getStoredLanguage()
+	const currentLanguage = getInitialLanguage()
 
 	i18nInstance = {
 		language: currentLanguage,
