@@ -290,6 +290,32 @@ jobs:
           fi
           echo "All notarization secrets present"
 
+      - name: Configure Linux AppImage update information
+        if: contains(matrix.platform, 'ubuntu')
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "${{ matrix.arch }}" in
+            x86_64) APPIMAGE_RELEASE_ARCH=amd64 ;;
+            aarch64) APPIMAGE_RELEASE_ARCH=aarch64 ;;
+            *)
+              echo "ERROR: unsupported Linux AppImage architecture: ${{ matrix.arch }}"
+              exit 1
+              ;;
+          esac
+          REPOSITORY="${GITHUB_REPOSITORY#*/}"
+          # The embedded filename is matched against the assets of whichever
+          # release is "latest" when an installed AppImage checks for updates, so
+          # it must not name this build's version: a 0.7.1 AppImage asking for
+          # DashBeam_0.7.1_amd64.AppImage.zsync would never find the 0.7.2
+          # sidecar that replaced it. "*" is a wildcard in this field.
+          APPIMAGE_SIDECAR_PATTERN="DashBeam_*_${APPIMAGE_RELEASE_ARCH}.AppImage.zsync"
+          LDAI_UPDATE_INFORMATION="gh-releases-zsync|${GITHUB_REPOSITORY_OWNER}|${REPOSITORY}|latest|${APPIMAGE_SIDECAR_PATTERN}"
+          {
+            echo "LDAI_UPDATE_INFORMATION=${LDAI_UPDATE_INFORMATION}"
+            echo "APPIMAGE_EXPECTED_SIDECAR=DashBeam_${VERSION}_${APPIMAGE_RELEASE_ARCH}.AppImage.zsync"
+          } >> "$GITHUB_ENV"
+
       # Retries only help transient latest.json upload races. Keep low — each attempt
       # re-runs the full tauri build (wasm + frontend + rust + bundles), which turned a
       # deterministic WiX/MSI failure into ~40+ minutes of useless rebuilds.
@@ -316,6 +342,50 @@ jobs:
           prerelease: false
           uploadUpdaterJson: true
           retryAttempts: 2
+
+      - name: Verify and upload Linux AppImage update sidecar
+        if: contains(matrix.platform, 'ubuntu')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          RELEASE_TAG="$GITHUB_REF_NAME"
+          export GH_REPO="$GITHUB_REPOSITORY"
+          shopt -s nullglob
+          SIDECARS=(src-tauri/target/release/bundle/appimage/*.AppImage.zsync)
+          if [ "${#SIDECARS[@]}" -ne 1 ]; then
+            echo "ERROR: expected exactly one Linux AppImage zsync sidecar, found ${#SIDECARS[@]}"
+            exit 1
+          fi
+
+          SIDECAR="${SIDECARS[0]}"
+          APPIMAGE="${SIDECAR%.zsync}"
+          SIDECAR_NAME="$(basename "$SIDECAR")"
+          if [ ! -f "$APPIMAGE" ] || [ "$SIDECAR_NAME" != "$APPIMAGE_EXPECTED_SIDECAR" ]; then
+            echo "ERROR: expected $APPIMAGE_EXPECTED_SIDECAR beside its AppImage, found $SIDECAR_NAME"
+            exit 1
+          fi
+
+          # The asset has to stay reachable by the pattern the AppImage carries,
+          # or the update check resolves "latest" and then matches nothing.
+          SIDECAR_PATTERN="${LDAI_UPDATE_INFORMATION##*|}"
+          case "$SIDECAR_NAME" in
+            $SIDECAR_PATTERN) ;;
+            *)
+              echo "ERROR: $SIDECAR_NAME is not matched by $SIDECAR_PATTERN"
+              exit 1
+              ;;
+          esac
+
+          UPD_INFO_DUMP="$(readelf --string-dump=.upd_info "$APPIMAGE")"
+          mapfile -t EMBEDDED_UPD_INFO < <(sed -n 's/^[[:space:]]*\[[^]]*\][[:space:]]*//p' <<< "$UPD_INFO_DUMP")
+          if [ "${#EMBEDDED_UPD_INFO[@]}" -ne 1 ] || [ "${EMBEDDED_UPD_INFO[0]}" != "$LDAI_UPDATE_INFORMATION" ]; then
+            echo "ERROR: AppImage .upd_info does not exactly match LDAI_UPDATE_INFORMATION"
+            exit 1
+          fi
+
+          gh release upload "$RELEASE_TAG" "$SIDECAR" --clobber
 
       - name: Package Windows portable ZIP
         if: matrix.platform == 'windows-latest'
