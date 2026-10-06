@@ -214,11 +214,13 @@ pub fn setup_tray(app: &AppHandle) -> tauri::Result<()> {
             }
         });
 
-    // Linux: left-click menu attach is unsupported — pop manually.
+    // Linux: the appindicator host only shows the item once it has a menu, and
+    // click events never reach the app there, so attach the menu up front.
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     let mut builder = {
         let menu_for_click = menu.clone();
         TrayIconBuilder::new()
+            .menu(&menu)
             .tooltip("DashBeam")
             .on_tray_icon_event(move |tray, event| {
                 let TrayIconEvent::Click {
