@@ -16,7 +16,7 @@ protocol = { path = "../protocol", package = "sendme-protocol" }
 anyhow = "1.0.75"
 data-encoding = "2.8.0"
 dirs = "6.0.0"
-iroh-blobs = { version = "0.103" }
+iroh-blobs = { version = "0.103.1" }
 iroh = { version = "1.0.3", features = ["platform-verifier"] }
 iroh-mdns-address-lookup = "0.4"
 n0-future = "0.3"

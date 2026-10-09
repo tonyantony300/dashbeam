@@ -32,7 +32,7 @@ tokio = { version = "1.0", features = ["full"] }
 anyhow = "1.0"
 n0-watcher = "1.0"
 iroh = { version = "1.0.3", features = ["platform-verifier"] }
-iroh-blobs = { version = "0.103" }
+iroh-blobs = { version = "0.103.1" }
 engine = { path = "../engine" }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

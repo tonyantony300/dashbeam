@@ -23,7 +23,7 @@ tracing = "0.1.40"
 url = "2"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-iroh-blobs = { version = "0.103" }
+iroh-blobs = { version = "0.103.1" }
 iroh = { version = "1.0.3", features = ["platform-verifier"] }
 # Pin to the same rustls iroh resolves so dyn ServerCertVerifier types unify.
 # default-features = false avoids an extra aws-lc-sys build; ring comes via iroh.
@@ -32,7 +32,7 @@ tokio = { version = "1.34.0", features = ["full"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 getrandom = { version = "0.3", features = ["wasm_js"] }
-iroh-blobs = { version = "0.103", default-features = false }
+iroh-blobs = { version = "0.103.1", default-features = false }
 iroh = { version = "1.0.3", default-features = false, features = ["tls-ring"] }
 tokio = { version = "1.34.0", features = ["io-util", "macros", "rt", "sync"] }
 web-time = "1"
