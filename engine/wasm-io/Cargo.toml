@@ -15,7 +15,7 @@ name = "wasm_io"
 protocol = { path = "../protocol", package = "sendme-protocol" }
 anyhow = "1.0.75"
 getrandom = { version = "0.3", features = ["wasm_js"] }
-iroh-blobs = { version = "0.103", default-features = false }
+iroh-blobs = { version = "0.103.1", default-features = false }
 iroh = { version = "1.0.3", default-features = false, features = ["tls-ring"] }
 n0-future = "0.3"
 tokio = { version = "1.34.0", features = ["macros", "rt", "sync"] }
