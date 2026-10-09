@@ -32,6 +32,11 @@ new one. Check your tray or menu bar first.
 **More info → Run anyway**, or verify your download against the checksums on the
 [releases page](https://github.com/tonyantony300/dashbeam/releases) first.
 
+**Windows: nothing happens at all.** DashBeam draws its interface with the Microsoft
+Edge WebView2 Runtime, which isn't on every machine. If it's missing or damaged, the
+app opens no window and no process shows in Task Manager. Install it from
+[Microsoft](https://developer.microsoft.com/microsoft-edge/webview2) and launch again.
+
 **macOS.** Builds are signed and notarised, so Gatekeeper shouldn't object. If macOS
 says the app is damaged or from an unidentified developer, that's a bug worth reporting;
 mention where you downloaded it from.
