@@ -66,7 +66,7 @@ fun exportDirectoryToTree(
             )
         }
 
-        val mime = "application/octet-stream"
+        val mime = mimeTypeForFileName(targetName)
         val created = parent.createFile(mime, targetName)
             ?: throw IOException("Failed to create file '$targetName' under $treeUri")
 

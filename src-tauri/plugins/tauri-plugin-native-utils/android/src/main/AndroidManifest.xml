@@ -9,6 +9,8 @@
     <!-- Required for WifiManager.MulticastLock; Android drops multicast to apps
          that don't hold one, so mDNS needs this to answer reliably. -->
     <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
+    <!-- Required to fire ACTION_VIEW for received .apk files on Android 8+. -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
     <application>
         <!-- connectedDevice, not dataSync: Android 15 caps dataSync foreground

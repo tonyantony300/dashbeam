@@ -278,7 +278,15 @@ class NativeUtils(private val activity: Activity) : Plugin(activity) {
 
             if (uriString.isNotEmpty()) {
                 val uri = Uri.parse(uriString)
-                val mime = activity.contentResolver.getType(uri) ?: "*/*"
+                val mime = resolveViewMimeType(uri)
+                if (isApkTarget(mime, uri) && !canInstallUnknownApps()) {
+                    // Without the unknown-sources grant the Package Installer fails silently.
+                    if (openUnknownSourcesSettings()) {
+                        invoke.reject("Enable \"Install unknown apps\" for DashBeam, then tap Open again")
+                        return
+                    }
+                    // Settings screen unavailable: fall through to VIEW + folder fallbacks.
+                }
                 candidates += Intent(Intent.ACTION_VIEW).apply {
                     setDataAndType(uri, mime)
                     addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
@@ -391,6 +399,63 @@ class NativeUtils(private val activity: Activity) : Plugin(activity) {
             buffer.write(chunk, 0, read)
         }
         return buffer.toString(Charsets.UTF_8.name())
+    }
+
+    // Stored rows may carry octet-stream, so the extension wins over a generic resolver answer.
+    private fun resolveViewMimeType(uri: Uri): String {
+        val resolverType = try {
+            activity.contentResolver.getType(uri)
+        } catch (_: Exception) {
+            null
+        }
+        val displayName = try {
+            resolveDisplayName(activity, uri)
+        } catch (_: Exception) {
+            null
+        }
+        if (displayName?.endsWith(".apk", ignoreCase = true) == true) return APK_MIME_TYPE
+        if (uri.lastPathSegment?.endsWith(".apk", ignoreCase = true) == true) return APK_MIME_TYPE
+
+        if (resolverType != null && !isGenericMimeType(resolverType)) return resolverType
+
+        val candidate = displayName?.takeIf { it.isNotBlank() } ?: uri.lastPathSegment
+        if (candidate != null) {
+            val extMime = mimeTypeForFileName(candidate)
+            if (!isGenericMimeType(extMime)) return extMime
+            if (resolverType != null) return resolverType
+            return extMime
+        }
+        return resolverType ?: "*/*"
+    }
+
+    private fun isApkTarget(mime: String, uri: Uri): Boolean {
+        if (mime == APK_MIME_TYPE) return true
+        return try {
+            resolveDisplayName(activity, uri).endsWith(".apk", ignoreCase = true)
+        } catch (_: Exception) {
+            uri.lastPathSegment?.endsWith(".apk", ignoreCase = true) == true
+        }
+    }
+
+    private fun canInstallUnknownApps(): Boolean {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            activity.packageManager.canRequestPackageInstalls()
+        } else {
+            true
+        }
+    }
+
+    private fun openUnknownSourcesSettings(): Boolean {
+        return try {
+            val settingsIntent = Intent(
+                android.provider.Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                Uri.parse("package:${activity.packageName}"),
+            ).apply { addFlags(Intent.FLAG_ACTIVITY_NEW_TASK) }
+            activity.startActivity(settingsIntent)
+            true
+        } catch (_: Exception) {
+            false
+        }
     }
 
     /**

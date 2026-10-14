@@ -77,7 +77,7 @@ private fun exportToDownloads(
 
         val pending = ContentValues().apply {
             put(MediaStore.Downloads.DISPLAY_NAME, fileName)
-            put(MediaStore.Downloads.MIME_TYPE, "application/octet-stream")
+            put(MediaStore.Downloads.MIME_TYPE, mimeTypeForFileName(fileName))
             put(MediaStore.Downloads.RELATIVE_PATH, relativePath)
             put(MediaStore.Downloads.IS_PENDING, 1)
         }
