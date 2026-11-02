@@ -34,7 +34,18 @@ extension NativeUtilsPlugin {
     let inbox = container.appendingPathComponent("share_inbox")
     // Batches are named by millisecond timestamp; `.partial` ones are still
     // being written by the extension.
-    let oldest = ((try? fileManager.contentsOfDirectory(at: inbox, includingPropertiesForKeys: nil)) ?? [])
+    let entries = (try? fileManager.contentsOfDirectory(at: inbox, includingPropertiesForKeys: nil)) ?? []
+    // An extension killed mid-save leaves its `.partial` behind; anything
+    // this old was abandoned.
+    let abandonedBefore = Int(Date().addingTimeInterval(-60 * 60).timeIntervalSince1970 * 1000)
+    for partial in entries where partial.pathExtension == "partial" {
+      if let started = Int(partial.deletingPathExtension().lastPathComponent),
+        started < abandonedBefore
+      {
+        try? fileManager.removeItem(at: partial)
+      }
+    }
+    let oldest = entries
       .filter { $0.pathExtension != "partial" }
       .min { $0.lastPathComponent < $1.lastPathComponent }
     guard let batch = oldest else { return nil }
