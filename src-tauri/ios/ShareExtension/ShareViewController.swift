@@ -8,6 +8,8 @@ import UIKit
 class ShareViewController: UIViewController {
   private let statusView = ShareStatusView()
   private var saveError: Error?
+  /// `viewDidAppear` runs again if the sheet is half-dismissed and snaps back.
+  private var didStartSave = false
 
   override func loadView() {
     view = statusView
@@ -20,6 +22,8 @@ class ShareViewController: UIViewController {
 
   override func viewDidAppear(_ animated: Bool) {
     super.viewDidAppear(animated)
+    guard !didStartSave else { return }
+    didStartSave = true
     let providers = (extensionContext?.inputItems as? [NSExtensionItem] ?? [])
       .flatMap { $0.attachments ?? [] }
 
