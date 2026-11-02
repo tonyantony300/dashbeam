@@ -875,9 +875,18 @@ export function useReceiver(): UseReceiverReturn {
 				fileNamesRef.current
 			)
 			if (targetPath) {
-				// The opener plugin can't reveal files on iOS.
-				if (IS_IOS) await openDownloadTarget(targetPath)
-				else await revealItemInDir(targetPath)
+				// The opener plugin can't reveal files on iOS, so open the item
+				// itself, or the folder when several top-level items arrived.
+				if (IS_IOS) {
+					const topLevel = new Set(
+						fileNamesRef.current.map((name) =>
+							isAbsolutePath(name)
+								? name
+								: normalizeSeparators(name).split('/')[0]
+						)
+					)
+					await openDownloadTarget(topLevel.size > 1 ? revealBase : targetPath)
+				} else await revealItemInDir(targetPath)
 			}
 		} catch (error) {
 			folderOpenTriggeredRef.current = false
