@@ -71,7 +71,11 @@ enum ShareInbox {
   /// The provider's suggested name (e.g. a Photos asset's `IMG_0001`) reads
   /// better than the temporary file's, which is often a UUID.
   private static func fileName(suggested: String?, at url: URL) -> String {
-    guard let suggested, !suggested.isEmpty else {
+    // Set by the sharing app, so it must stay a single path component.
+    let suggested = suggested?
+      .replacingOccurrences(of: "/", with: "_")
+      .replacingOccurrences(of: ":", with: "_")
+    guard let suggested, !suggested.isEmpty, suggested != ".", suggested != ".." else {
       return url.lastPathComponent
     }
     if (suggested as NSString).pathExtension.isEmpty, !url.pathExtension.isEmpty {
