@@ -3,6 +3,7 @@
 use crate::approver::Approver;
 use crate::config::AgentConfig;
 use crate::events::{ChannelEmitter, EngineEvent};
+use crate::inbound::{self, Inbound};
 use crate::registry::Registry;
 use anyhow::{anyhow, Context, Result};
 use engine::{
@@ -36,8 +37,10 @@ pub struct AgentService {
     approver: Arc<dyn Approver>,
     node: Arc<NodeService>,
     registry: Registry,
+    pub(crate) inbound: Inbound,
     stop_tx: watch::Sender<bool>,
     event_loop: Mutex<Option<JoinHandle<()>>>,
+    auto_worker: Mutex<Option<JoinHandle<()>>>,
     shut_down: AtomicBool,
 }
 
@@ -103,12 +106,20 @@ impl AgentService {
             approver: opts.approver,
             node,
             registry: Registry::new(REGISTRY_CAP),
+            inbound: Inbound::new(),
             stop_tx,
             event_loop: Mutex::new(None),
+            auto_worker: Mutex::new(None),
             shut_down: AtomicBool::new(false),
         });
         let handle = tokio::spawn(run_event_loop(Arc::downgrade(&svc), events_rx, stop_rx));
         *svc.event_loop.lock().expect("event loop lock") = Some(handle);
+        let worker = tokio::spawn(inbound::run_auto_worker(
+            Arc::downgrade(&svc),
+            svc.inbound.auto_notify(),
+            svc.stop_signal(),
+        ));
+        *svc.auto_worker.lock().expect("auto worker lock") = Some(worker);
 
         let me = svc.identity();
         tracing::info!(
@@ -144,6 +155,11 @@ impl AgentService {
         self.allow_agent_pairing
     }
 
+    /// Flips to `true` once on shutdown; background tasks exit on it.
+    pub(crate) fn stop_signal(&self) -> watch::Receiver<bool> {
+        self.stop_tx.subscribe()
+    }
+
     pub fn identity(&self) -> DeviceInfo {
         self.node.device_info()
     }
@@ -171,16 +187,27 @@ impl AgentService {
         if let Some(handle) = handle {
             let _ = handle.await;
         }
+        let worker = self.auto_worker.lock().expect("auto worker lock").take();
+        if let Some(worker) = worker {
+            worker.abort();
+            let _ = worker.await;
+        }
         self.node.shutdown().await
     }
 
     /// Single dispatch point for engine events. Handlers must not block: spawn
     /// with a cloned `Arc` for anything that awaits (e.g. the approver).
     fn handle_event(self: &Arc<Self>, name: &str, payload: Option<&str>) {
-        tracing::trace!(event = name, ?payload, "engine event");
+        // Invite payloads carry blob tickets, which are bearer secrets.
+        let logged = if name == "paired-invite-received" {
+            Some("<elided>")
+        } else {
+            payload
+        };
+        tracing::trace!(event = name, payload = ?logged, "engine event");
         match name {
-            // Inbound invites and nearby pairing (Task 6).
-            "paired-invite-received" | "nearby-pair-request-received" => {}
+            "paired-invite-received" => self.on_invite_received(payload),
+            "nearby-pair-request-received" => self.on_pair_request(payload),
             // Outbound invite answers (Task 7).
             "paired-invite-response" => {}
             // Progress for registry records (Tasks 6–8).

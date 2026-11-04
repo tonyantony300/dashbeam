@@ -15,6 +15,13 @@ pub trait Approver: Send + Sync {
         file_count: u32,
         total_size: u64,
     ) -> bool;
+
+    /// Whether `approve_invite` gets a say on invites from paired-but-untrusted
+    /// devices. `false` leaves them pending for `accept_incoming` /
+    /// `decline_incoming` until they expire, instead of declining outright.
+    fn answers_paired_invites(&self) -> bool {
+        true
+    }
 }
 
 /// Default for non-interactive nodes: says no to everything.
@@ -36,6 +43,11 @@ impl Approver for DenyAll {
     ) -> bool {
         false
     }
+
+    // Nobody is there to answer, so paired invites wait for an agent instead.
+    fn answers_paired_invites(&self) -> bool {
+        false
+    }
 }
 
 #[cfg(test)]
@@ -48,5 +60,6 @@ mod tests {
         let a: Arc<dyn Approver> = Arc::new(DenyAll);
         assert!(!a.approve_pairing("x", "id").await);
         assert!(!a.approve_invite("x", "id", 1, 10).await);
+        assert!(!a.answers_paired_invites());
     }
 }

@@ -4,6 +4,7 @@ pub mod approver;
 pub mod config;
 pub mod devices;
 pub mod events;
+pub mod inbound;
 pub mod lock;
 pub mod paths;
 pub mod registry;
