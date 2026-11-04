@@ -492,7 +492,7 @@ impl AgentService {
         });
     }
 
-    fn paired_device(&self, endpoint_id: &str) -> Result<Option<PairedDeviceInfo>> {
+    pub(crate) fn paired_device(&self, endpoint_id: &str) -> Result<Option<PairedDeviceInfo>> {
         Ok(self
             .list_devices()?
             .into_iter()
@@ -520,8 +520,9 @@ impl AgentService {
             .unwrap_or_else(|| sender_name.trim().to_string())
     }
 
+    /// Inserts the record and its cancel slot; [`Self::receive`] starts it.
     fn insert_inbound(&self, endpoint_id: &str, name: &str, total: u64) -> TransferRecord {
-        self.registry().insert(TransferRecord {
+        let rec = self.registry().insert(TransferRecord {
             id: String::new(),
             seq: 0,
             direction: Direction::Inbound,
@@ -540,19 +541,26 @@ impl AgentService {
             saved_paths: Vec::new(),
             ticket: None,
             expires_at_ms: None,
-        })
+        });
+        self.cancels.register(&rec.id);
+        rec
     }
 
     /// Downloads into `receive_dir/<sanitized sender>/` and makes the single
     /// terminal update on `rec_id`.
     async fn receive(&self, rec_id: String, ticket: String, endpoint_id: &str, name: &str) {
+        // `cancel_transfer` already finalized it.
+        let Some(cancel_rx) = self.cancels.start(&rec_id) else {
+            return;
+        };
         let progress = Arc::new(ReceiveProgress::new(
             self.registry().clone(),
             rec_id.clone(),
         ));
         let result = self
-            .download(ticket, endpoint_id, name, progress.clone())
+            .download(ticket, endpoint_id, name, progress.clone(), cancel_rx)
             .await;
+        let cancelled = !self.cancels.finish(&rec_id);
         match result {
             Ok(out_dir) => {
                 let saved = progress.saved_paths(&out_dir);
@@ -561,6 +569,11 @@ impl AgentService {
                     r.bytes_done = r.total_bytes;
                     r.saved_paths = saved;
                 });
+            }
+            Err(_) if cancelled => {
+                tracing::info!(sender = %endpoint_id, "inbound transfer cancelled");
+                self.registry()
+                    .update(&rec_id, |r| r.status = TransferStatus::Cancelled);
             }
             Err(e) => {
                 tracing::warn!(sender = %endpoint_id, "inbound transfer failed: {e:#}");
@@ -578,6 +591,7 @@ impl AgentService {
         endpoint_id: &str,
         name: &str,
         progress: Arc<ReceiveProgress>,
+        cancel_rx: oneshot::Receiver<()>,
     ) -> Result<PathBuf> {
         let output_dir = self
             .config()
@@ -594,8 +608,6 @@ impl AgentService {
             magic_ipv4_addr: None,
             magic_ipv6_addr: None,
         };
-        // Held until the download returns: a dropped sender reads as a cancel.
-        let (_cancel_tx, cancel_rx) = oneshot::channel();
         let result = engine::download(ticket, options, Some(progress), cancel_rx).await?;
         Ok(result.file_path)
     }
@@ -654,7 +666,7 @@ fn sender_folder(name: &str, endpoint_id: &str) -> String {
 }
 
 /// `"{bytes}:{total}:{speed_milli}"` from `protocol::progress::format_progress_payload`.
-fn parse_progress(payload: &str) -> Option<(u64, u64)> {
+pub(crate) fn parse_progress(payload: &str) -> Option<(u64, u64)> {
     let mut parts = payload.split(':');
     let bytes = parts.next()?.parse().ok()?;
     let total = parts.next()?.parse().ok()?;

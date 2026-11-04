@@ -151,6 +151,27 @@ impl Registry {
         Some(r.clone())
     }
 
+    /// Like [`update`](Self::update), but a no-op (no seq bump) once the
+    /// record is terminal: for progress and status steps that may race the
+    /// single terminal update.
+    pub fn update_live(
+        &self,
+        id: &str,
+        f: impl FnOnce(&mut TransferRecord),
+    ) -> Option<TransferRecord> {
+        let mut st = self.lock();
+        let i = st.records.iter().position(|r| r.id == id)?;
+        if st.records[i].status.is_terminal() {
+            return None;
+        }
+        let seq = self.bump(&mut st);
+        let r = &mut st.records[i];
+        f(r);
+        r.seq = seq;
+        r.updated_at_ms = engine::unix_now_ms();
+        Some(r.clone())
+    }
+
     pub fn get(&self, id: &str) -> Option<TransferRecord> {
         self.lock().records.iter().find(|r| r.id == id).cloned()
     }
@@ -253,6 +274,20 @@ mod tests {
         assert!(up.seq > b.seq);
         assert_eq!(r.get(&a.id).unwrap().bytes_done, 5);
         assert!(r.update("nope", |_| {}).is_none());
+    }
+
+    #[test]
+    fn update_live_skips_terminal_records() {
+        let r = Registry::new(10);
+        let a = r.insert(rec(Direction::Outbound, TransferStatus::Transferring));
+        let live = r.update_live(&a.id, |t| t.bytes_done = 3).unwrap();
+        assert_eq!(live.bytes_done, 3);
+        let done = r
+            .update(&a.id, |t| t.status = TransferStatus::Delivered)
+            .unwrap();
+        assert!(r.update_live(&a.id, |t| t.bytes_done = 9).is_none());
+        let after = r.get(&a.id).unwrap();
+        assert_eq!((after.seq, after.bytes_done), (done.seq, 3));
     }
 
     #[tokio::test]

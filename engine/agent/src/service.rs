@@ -1,17 +1,20 @@
 //! `AgentService`: the headless node plus the agent's orchestration state.
 
 use crate::approver::Approver;
+use crate::cancel::{Cancelled, Cancels};
 use crate::config::AgentConfig;
 use crate::events::{ChannelEmitter, EngineEvent};
 use crate::inbound::{self, Inbound};
-use crate::registry::Registry;
-use anyhow::{anyhow, Context, Result};
+use crate::outbound::Outbound;
+use crate::registry::{Registry, TransferRecord, TransferStatus};
+use anyhow::{anyhow, bail, Context, Result};
 use engine::{
     DeviceInfo, Discoverability, IdentityOptions, NearbyDevice, NodeService, PairedDeviceInfo,
 };
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Weak};
+use std::time::Duration;
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 
@@ -19,6 +22,8 @@ use tokio::task::JoinHandle;
 pub const AGENT_DEVICE_TYPE: &str = "agent";
 /// Transfers kept in the in-memory registry.
 const REGISTRY_CAP: usize = 500;
+/// How long `cancel_transfer` waits for a running transfer to wind down.
+const CANCEL_WAIT: Duration = Duration::from_secs(10);
 
 pub struct AgentOptions {
     pub data_dir: PathBuf,
@@ -38,6 +43,9 @@ pub struct AgentService {
     node: Arc<NodeService>,
     registry: Registry,
     pub(crate) inbound: Inbound,
+    pub(crate) outbound: Outbound,
+    /// Cancel slots for every cancellable transfer, inbound and outbound.
+    pub(crate) cancels: Cancels,
     stop_tx: watch::Sender<bool>,
     event_loop: Mutex<Option<JoinHandle<()>>>,
     auto_worker: Mutex<Option<JoinHandle<()>>>,
@@ -107,6 +115,8 @@ impl AgentService {
             node,
             registry: Registry::new(REGISTRY_CAP),
             inbound: Inbound::new(),
+            outbound: Outbound::default(),
+            cancels: Cancels::default(),
             stop_tx,
             event_loop: Mutex::new(None),
             auto_worker: Mutex::new(None),
@@ -177,6 +187,37 @@ impl AgentService {
         self.node.set_device_display_name(name)
     }
 
+    /// Cancels a queued or running transfer, inbound or outbound, and returns
+    /// its record. An already-terminal transfer comes back unchanged (not an
+    /// error). A running one gets up to 10 s to stop its share or download;
+    /// if it is still winding down after that, the live record is returned
+    /// and the cancel still lands.
+    pub async fn cancel_transfer(&self, id: &str) -> Result<TransferRecord> {
+        let unknown = || anyhow!("no transfer with id {id}");
+        let rec = self.registry.get(id).ok_or_else(unknown)?;
+        if rec.status.is_terminal() {
+            return Ok(rec);
+        }
+        let how = self.cancels.cancel(id);
+        if how == Cancelled::Pending {
+            // Never started, so nothing else will write its terminal state.
+            return self
+                .registry
+                .update_live(id, |r| r.status = TransferStatus::Cancelled)
+                .or_else(|| self.registry.get(id))
+                .ok_or_else(unknown);
+        }
+        let (rec, running) = self
+            .registry
+            .wait_terminal(id, CANCEL_WAIT)
+            .await
+            .ok_or_else(unknown)?;
+        if running && how == Cancelled::NotTracked {
+            bail!("transfer {id} can't be cancelled");
+        }
+        Ok(rec)
+    }
+
     /// Stops the event loop, then the node. Idempotent.
     pub async fn shutdown(&self) -> Result<()> {
         if self.shut_down.swap(true, Ordering::SeqCst) {
@@ -208,9 +249,8 @@ impl AgentService {
         match name {
             "paired-invite-received" => self.on_invite_received(payload),
             "nearby-pair-request-received" => self.on_pair_request(payload),
-            // Outbound invite answers (Task 7).
-            "paired-invite-response" => {}
-            // Progress for registry records (Tasks 6–8).
+            "paired-invite-response" => self.on_invite_response(payload),
+            // Progress arrives on per-transfer emitters, not the node's.
             "transfer-progress" | "receive-progress" => {}
             // Pairing state changes (Task 9).
             "device-paired" | "device-unpaired" => {}
