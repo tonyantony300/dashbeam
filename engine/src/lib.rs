@@ -21,7 +21,7 @@ pub use native::*;
 #[cfg(target_arch = "wasm32")]
 pub use wasm_io::*;
 
-pub use protocol::identity::unix_now_ms;
+pub use protocol::identity::{default_display_name, unix_now_ms};
 /// Shared protocol helpers not re-exported by the platform crates.
 pub use protocol::{
     allows_unpaired_control, build_relay_mode, download_to_store, get_relay_status,
