@@ -23,22 +23,7 @@ pub async fn ensure_node(data_dir: &Path) -> Result<Client> {
         Err(e) => return Err(e),
     }
 
-    let mut child = match NodeLock::acquire(data_dir) {
-        Ok(lock) => {
-            let sock = agent::paths::socket_path(data_dir);
-            match std::fs::remove_file(&sock) {
-                Ok(()) => tracing::debug!("removed stale socket {}", sock.display()),
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                Err(e) => return Err(e).with_context(|| format!("remove {}", sock.display())),
-            }
-            drop(lock);
-            Some(spawn_background(data_dir)?)
-        }
-        // Held: a node is starting up (or another client just spawned one).
-        Err(e) if e.to_string().contains("already running") => None,
-        Err(e) => return Err(e),
-    };
-
+    let mut child = spawn_if_unlocked(data_dir)?;
     let log = agent::paths::log_path(data_dir);
     let deadline = tokio::time::Instant::now() + START_TIMEOUT;
     loop {
@@ -64,7 +49,13 @@ pub async fn ensure_node(data_dir: &Path) -> Result<Client> {
                 }
                 return Ok(client);
             }
-            Err(e) if ipc::is_not_running(&e) => {}
+            Err(e) if ipc::is_not_running(&e) => {
+                // The lock holder may be a node shutting down (socket already
+                // gone, lock still held for a few seconds): spawn once it lets go.
+                if child.is_none() {
+                    child = spawn_if_unlocked(data_dir)?;
+                }
+            }
             Err(e) => return Err(e),
         }
         if tokio::time::Instant::now() >= deadline {
@@ -75,6 +66,24 @@ pub async fn ensure_node(data_dir: &Path) -> Result<Client> {
             );
         }
     }
+}
+
+/// Spawns a background node if no node holds the lock, first removing the
+/// stale socket. `None` while the lock is held (a node starting or stopping).
+fn spawn_if_unlocked(data_dir: &Path) -> Result<Option<Child>> {
+    let lock = match NodeLock::acquire(data_dir) {
+        Ok(lock) => lock,
+        Err(e) if e.to_string().contains("already running") => return Ok(None),
+        Err(e) => return Err(e),
+    };
+    let sock = agent::paths::socket_path(data_dir);
+    match std::fs::remove_file(&sock) {
+        Ok(()) => tracing::debug!("removed stale socket {}", sock.display()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e).with_context(|| format!("remove {}", sock.display())),
+    }
+    drop(lock);
+    spawn_background(data_dir).map(Some)
 }
 
 fn spawn_background(data_dir: &Path) -> Result<Child> {

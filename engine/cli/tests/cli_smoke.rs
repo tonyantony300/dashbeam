@@ -163,3 +163,42 @@ fn relative_share_path_resolves_against_client_cwd() {
         "{rec}"
     );
 }
+
+#[test]
+fn autostart_during_node_shutdown_window_succeeds() {
+    use std::io::{BufRead, BufReader, Write};
+    use std::os::unix::net::UnixStream;
+
+    let node = Node::new();
+    let o = dashbeam(node.path(), &["id"]);
+    assert!(o.status.success(), "id failed: {}", stderr(&o));
+    let id = stdout(&o).trim().to_string();
+    let st = status_json(node.path()).unwrap();
+    let old_pid = st["pid"].as_i64().unwrap() as i32;
+    let sock = std::path::PathBuf::from(st["data_dir"].as_str().unwrap()).join("node.sock");
+
+    // Shutdown removes the socket at once but holds the lock while the node winds down.
+    let mut s = UnixStream::connect(&sock).unwrap();
+    s.write_all(b"{\"hello\":{\"version\":1}}\n{\"op\":\"shutdown\"}\n")
+        .unwrap();
+    let mut r = BufReader::new(s.try_clone().unwrap());
+    let mut line = String::new();
+    r.read_line(&mut line).unwrap();
+    line.clear();
+    r.read_line(&mut line).unwrap();
+    assert!(line.contains("\"ok\""), "{line}");
+    assert!(alive(old_pid), "old node should still be shutting down");
+
+    let started = Instant::now();
+    let o = dashbeam(node.path(), &["id"]);
+    let took = started.elapsed();
+    assert!(
+        o.status.success(),
+        "id during shutdown failed: {}",
+        stderr(&o)
+    );
+    assert_eq!(stdout(&o).trim(), id);
+    assert!(took < Duration::from_secs(20), "took {took:?}");
+    let new_pid = status_json(node.path()).unwrap()["pid"].as_i64().unwrap() as i32;
+    assert_ne!(new_pid, old_pid);
+}

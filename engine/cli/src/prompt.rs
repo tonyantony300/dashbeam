@@ -5,9 +5,31 @@ use std::io::{BufRead, Write};
 use std::time::Duration;
 use tokio::sync::{mpsc, Mutex};
 
+/// Bidi controls that can visually reorder the rest of a line.
+fn is_bidi_control(c: char) -> bool {
+    matches!(c, '\u{200E}' | '\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}')
+}
+
+/// Makes a peer-supplied string (display name, file name…) safe to print on a
+/// terminal: drops control characters (ESC, C1, newlines) and bidi overrides,
+/// so a name can't rewrite or hide the rest of the line (e.g. the fingerprint).
+pub fn display_safe(s: &str) -> String {
+    s.chars()
+        .filter(|&c| !c.is_control() && !is_bidi_control(c))
+        .collect()
+}
+
+/// Like [`display_safe`] but keeps newlines and tabs, for multi-line messages
+/// (errors listing candidate devices).
+pub fn display_safe_multiline(s: &str) -> String {
+    s.chars()
+        .filter(|&c| c == '\n' || c == '\t' || (!c.is_control() && !is_bidi_control(c)))
+        .collect()
+}
+
 /// First 8 hex chars of an endpoint id, shown next to names in prompts.
 pub fn short_fingerprint(endpoint_id: &str) -> String {
-    endpoint_id.chars().take(8).collect()
+    display_safe(endpoint_id).chars().take(8).collect()
 }
 
 /// `y`/`yes` (any case) is yes; anything else, including empty, is no.
@@ -83,7 +105,11 @@ impl TtyApprover {
 #[async_trait]
 impl Approver for TtyApprover {
     async fn approve_pairing(&self, name: &str, endpoint_id: &str) -> bool {
-        let q = format!("Pair with \"{name}\" ({})?", short_fingerprint(endpoint_id));
+        let q = format!(
+            "Pair with \"{}\" ({})?",
+            display_safe(name),
+            short_fingerprint(endpoint_id)
+        );
         self.ask(&q).await
     }
 
@@ -96,8 +122,9 @@ impl Approver for TtyApprover {
     ) -> bool {
         let files = if file_count == 1 { "file" } else { "files" };
         let q = format!(
-            "Accept {file_count} {files} ({}) from \"{name}\" ({})?",
+            "Accept {file_count} {files} ({}) from \"{}\" ({})?",
             format_bytes(total_size),
+            display_safe(name),
             short_fingerprint(endpoint_id)
         );
         self.ask(&q).await
@@ -123,6 +150,23 @@ mod tests {
         assert_eq!(short_fingerprint("0123456789abcdef"), "01234567");
         assert_eq!(format_bytes(999), "999 B");
         assert_eq!(format_bytes(1_500_000), "1.5 MB");
+    }
+
+    #[test]
+    fn display_safe_strips_terminal_and_bidi_controls() {
+        // ESC sequences: clear line, move cursor, recolor; plus a C1 CSI.
+        let evil = "Mallory\x1b[2K\r\x1b[1A\x1b[32mTrusted Mac\u{9b}31m\x07";
+        let safe = display_safe(evil);
+        assert!(!safe.chars().any(|c| c.is_control()), "{safe:?}");
+        assert_eq!(safe, "Mallory[2K[1A[32mTrusted Mac31m");
+        // RLO/PDI etc. would visually reorder the fingerprint after the name.
+        let bidi = "Bob\u{202E}fdcba\u{202C}\u{2066}x\u{2069}\u{200F}";
+        assert_eq!(display_safe(bidi), "Bobfdcbax");
+        assert_eq!(display_safe("Tony's Mac Agent"), "Tony's Mac Agent");
+        assert_eq!(
+            display_safe_multiline("a\x1b[2J\n  b\u{202E}c"),
+            "a[2J\n  bc"
+        );
     }
 
     #[tokio::test]

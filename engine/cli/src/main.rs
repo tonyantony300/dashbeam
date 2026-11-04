@@ -23,7 +23,11 @@ fn main() {
     let code = match runtime.block_on(commands::run(cli, iroh_secret_was_set)) {
         Ok(code) => code,
         Err(e) => {
-            eprintln!("dashbeam: {e:#}");
+            // Errors can quote peer-chosen names (e.g. ambiguous device lists).
+            eprintln!(
+                "dashbeam: {}",
+                dashbeam_cli::prompt::display_safe_multiline(&format!("{e:#}"))
+            );
             1
         }
     };

@@ -2,7 +2,7 @@
 
 use crate::daemon::{self, EXIT_ALREADY_RUNNING};
 use crate::ipc::{self, Client, Request, StartedBy, StatusInfo, WaitResult};
-use crate::prompt::{format_bytes, TtyApprover};
+use crate::prompt::{display_safe as safe, display_safe_multiline, format_bytes, TtyApprover};
 use agent::approver::{Approver, DenyAll};
 use agent::config::AgentConfig;
 use agent::inbound::PendingInvite;
@@ -212,7 +212,7 @@ pub async fn run(cli: Cli, iroh_secret_was_set: bool) -> Result<i32> {
                     let secs = exp.saturating_sub(engine::unix_now_ms()) / 1000;
                     eprintln!(
                         "one-time ticket for {} (transfer {}), expires in {secs}s; anyone holding it can download once:",
-                        rec.file_names.join(", "),
+                        safe(&rec.file_names.join(", ")),
                         rec.id
                     );
                 }
@@ -297,7 +297,7 @@ async fn finish_transfer(
         emit(json, &rec, || {
             println!("{} {}", rec.id, status_str(rec.status));
             if let Some(e) = &rec.error {
-                eprintln!("dashbeam: {e}");
+                eprintln!("dashbeam: {}", display_safe_multiline(e));
             }
         })?;
         // Already finished without success (e.g. a bad ticket): say so in the exit code.
@@ -322,10 +322,10 @@ async fn finish_transfer(
     emit(json, &rec, || {
         println!("{}", status_str(rec.status));
         for p in &rec.saved_paths {
-            println!("{}", p.display());
+            println!("{}", safe(&p.display().to_string()));
         }
         if let Some(e) = &rec.error {
-            eprintln!("dashbeam: {e}");
+            eprintln!("dashbeam: {}", display_safe_multiline(e));
         }
     })?;
     Ok(if rec.status == success { 0 } else { 1 })
@@ -542,7 +542,11 @@ async fn pair(dir: &Path, args: PairArgs, json: bool) -> Result<i32> {
             if !new.is_empty() {
                 if !json {
                     for d in new {
-                        println!("paired with {} ({})", d.display_name, d.endpoint_id);
+                        println!(
+                            "paired with {} ({})",
+                            safe(&d.display_name),
+                            safe(&d.endpoint_id)
+                        );
                     }
                 }
                 return Ok(0);
@@ -560,7 +564,11 @@ async fn pair(dir: &Path, args: PairArgs, json: bool) -> Result<i32> {
                 println!("paired");
             }
             for d in &new {
-                println!("paired with {} ({})", d.display_name, d.endpoint_id);
+                println!(
+                    "paired with {} ({})",
+                    safe(&d.display_name),
+                    safe(&d.endpoint_id)
+                );
             }
         });
     }
@@ -603,7 +611,11 @@ async fn trust(dir: &Path, device: String, trusted: bool, json: bool) -> Result<
         .await?;
     emit(json, &d, || {
         let what = if d.trusted { "trusted" } else { "untrusted" };
-        println!("{} ({}) is now {what}", d.display_name, d.endpoint_id);
+        println!(
+            "{} ({}) is now {what}",
+            safe(&d.display_name),
+            safe(&d.endpoint_id)
+        );
     })
 }
 
@@ -620,7 +632,7 @@ async fn inbox(dir: &Path, action: Option<InboxAction>, json: bool) -> Result<i3
                     println!(
                         "{}  {} ({})  {} file(s), {}",
                         p.invite_id,
-                        p.sender_name,
+                        safe(&p.sender_name),
                         crate::prompt::short_fingerprint(&p.endpoint_id),
                         p.file_count,
                         format_bytes(p.total_size)
@@ -657,7 +669,9 @@ fn print_devices(devices: &[PairedDeviceInfo]) {
         };
         println!(
             "{}  [{}]  {online}  {trusted}  {}{status}",
-            d.display_name, d.device_type, d.endpoint_id
+            safe(&d.display_name),
+            safe(&d.device_type),
+            safe(&d.endpoint_id)
         );
     }
 }
@@ -667,8 +681,8 @@ fn print_nearby(nearby: &[Value]) {
         println!("no nearby devices");
     }
     for d in nearby {
-        let s = |k: &str| d[k].as_str().unwrap_or("?").to_string();
-        let name = d["displayName"].as_str().unwrap_or("(unidentified)");
+        let s = |k: &str| safe(d[k].as_str().unwrap_or("?"));
+        let name = safe(d["displayName"].as_str().unwrap_or("(unidentified)"));
         println!(
             "{name}  [{}]  {}  {}",
             s("deviceType"),
@@ -691,13 +705,14 @@ fn print_transfers(list: &[TransferRecord]) {
             .peer
             .as_ref()
             .and_then(|p| p.name.clone().or(p.endpoint_id.clone()))
+            .map(|p| safe(&p))
             .unwrap_or_else(|| "-".into());
         println!(
             "{}  {dir}  {:<20}  {:<16}  {}  ({})",
             r.id,
             status_str(r.status),
             peer,
-            r.file_names.join(", "),
+            safe(&r.file_names.join(", ")),
             format_bytes(r.total_bytes)
         );
     }
