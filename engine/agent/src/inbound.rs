@@ -549,6 +549,16 @@ impl AgentService {
     /// Downloads into `receive_dir/<sanitized sender>/` and makes the single
     /// terminal update on `rec_id`.
     async fn receive(&self, rec_id: String, ticket: String, endpoint_id: &str, name: &str) {
+        let output_dir = self
+            .config()
+            .receive_dir(self.data_dir())
+            .join(sender_folder(name, endpoint_id));
+        self.receive_into(rec_id, ticket, output_dir).await;
+    }
+
+    /// Runs the download for `rec_id` into `output_dir` and makes the single
+    /// terminal update. Shared by paired invites and ticket receives.
+    pub(crate) async fn receive_into(&self, rec_id: String, ticket: String, output_dir: PathBuf) {
         // `cancel_transfer` already finalized it.
         let Some(cancel_rx) = self.cancels.start(&rec_id) else {
             return;
@@ -558,7 +568,7 @@ impl AgentService {
             rec_id.clone(),
         ));
         let result = self
-            .download(ticket, endpoint_id, name, progress.clone(), cancel_rx)
+            .download(ticket, output_dir, progress.clone(), cancel_rx)
             .await;
         let cancelled = !self.cancels.finish(&rec_id);
         match result {
@@ -571,12 +581,12 @@ impl AgentService {
                 });
             }
             Err(_) if cancelled => {
-                tracing::info!(sender = %endpoint_id, "inbound transfer cancelled");
+                tracing::info!(transfer = %rec_id, "inbound transfer cancelled");
                 self.registry()
                     .update(&rec_id, |r| r.status = TransferStatus::Cancelled);
             }
             Err(e) => {
-                tracing::warn!(sender = %endpoint_id, "inbound transfer failed: {e:#}");
+                tracing::warn!(transfer = %rec_id, "inbound transfer failed: {e:#}");
                 self.registry().update(&rec_id, |r| {
                     r.status = TransferStatus::Failed;
                     r.error = Some(format!("{e:#}"));
@@ -585,29 +595,29 @@ impl AgentService {
         }
     }
 
-    async fn download(
-        &self,
-        ticket: String,
-        endpoint_id: &str,
-        name: &str,
-        progress: Arc<ReceiveProgress>,
-        cancel_rx: oneshot::Receiver<()>,
-    ) -> Result<PathBuf> {
-        let output_dir = self
-            .config()
-            .receive_dir(self.data_dir())
-            .join(sender_folder(name, endpoint_id));
+    /// Relay/discovery from config for downloads and metadata probes.
+    pub(crate) fn receive_options(&self, output_dir: Option<PathBuf>) -> Result<ReceiveOptions> {
         let relay_mode = engine::build_relay_mode(self.config().relay.clone())
             .map_err(|e| anyhow!("invalid relay config: {e}"))?;
         let discovery_mode = engine::build_discovery_mode(self.config().discovery.clone())
             .map_err(|e| anyhow!("invalid discovery config: {e}"))?;
-        let options = ReceiveOptions {
-            output_dir: Some(output_dir),
+        Ok(ReceiveOptions {
+            output_dir,
             relay_mode,
             discovery_mode,
             magic_ipv4_addr: None,
             magic_ipv6_addr: None,
-        };
+        })
+    }
+
+    async fn download(
+        &self,
+        ticket: String,
+        output_dir: PathBuf,
+        progress: Arc<ReceiveProgress>,
+        cancel_rx: oneshot::Receiver<()>,
+    ) -> Result<PathBuf> {
+        let options = self.receive_options(Some(output_dir))?;
         let result = engine::download(ticket, options, Some(progress), cancel_rx).await?;
         Ok(result.file_path)
     }
@@ -681,7 +691,7 @@ struct ExportConflict {
 
 /// Per-transfer emitter: progress into the record, plus what's needed to
 /// report the real saved paths (names, and renames from conflict resolution).
-struct ReceiveProgress {
+pub(crate) struct ReceiveProgress {
     registry: Registry,
     id: String,
     names: Mutex<Vec<String>>,
@@ -689,7 +699,7 @@ struct ReceiveProgress {
 }
 
 impl ReceiveProgress {
-    fn new(registry: Registry, id: String) -> Self {
+    pub(crate) fn new(registry: Registry, id: String) -> Self {
         Self {
             registry,
             id,

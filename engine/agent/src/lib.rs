@@ -12,5 +12,6 @@ mod outbound;
 pub mod paths;
 pub mod registry;
 pub mod service;
+mod tickets;
 
 pub use service::{AgentOptions, AgentService};

@@ -681,6 +681,7 @@ dependencies = [
  "async-trait",
  "dirs",
  "engine",
+ "iroh-blobs",
  "serde",
  "serde_json",
  "tempfile",

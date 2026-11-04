@@ -461,7 +461,7 @@ fn unresolved(e: ResolveError, devices: &[PairedDeviceInfo]) -> anyhow::Error {
 }
 
 /// Per-share emitter: progress into the record, plus activity for the worker.
-struct SendProgress {
+pub(crate) struct SendProgress {
     registry: Registry,
     id: String,
     bytes: AtomicU64,
@@ -469,7 +469,7 @@ struct SendProgress {
 }
 
 impl SendProgress {
-    fn new(registry: Registry, id: String) -> Self {
+    pub(crate) fn new(registry: Registry, id: String) -> Self {
         Self {
             registry,
             id,
@@ -478,11 +478,11 @@ impl SendProgress {
         }
     }
 
-    fn bytes(&self) -> u64 {
+    pub(crate) fn bytes(&self) -> u64 {
         self.bytes.load(Ordering::SeqCst)
     }
 
-    fn started(&self) -> bool {
+    pub(crate) fn started(&self) -> bool {
         self.started.load(Ordering::SeqCst)
     }
 }
