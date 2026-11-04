@@ -23,7 +23,8 @@ pub use protocol::{
     FilePreviewItem, ReceiveOptions, RelayModeOption, SendOptions, VerifyDiscoveryResponse,
 };
 pub use device_identity::{
-    load_or_create_identity, DeviceIdentity, DeviceInfo, PairedDeviceInfo, PairedDeviceStore,
+    load_or_create_identity, load_or_create_identity_with, DeviceIdentity, DeviceInfo,
+    IdentityOptions, PairedDeviceInfo, PairedDeviceStore,
 };
 pub use history::{
     is_reclaimable_partial, partial_store_hash, reclaim_partial, TransferDirection,

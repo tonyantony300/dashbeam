@@ -39,20 +39,36 @@ pub fn identity_key_path(data_dir: &Path) -> PathBuf {
 }
 
 pub fn load_or_create_secret(data_dir: &Path) -> Result<SecretLoadOutcome> {
+    load_or_create_secret_with(data_dir, true, true)
+}
+
+/// `use_keychain == false` never touches the OS keychain; `honor_env == false`
+/// ignores `IROH_SECRET`. Both off gives a purely file-backed identity.
+pub fn load_or_create_secret_with(
+    data_dir: &Path,
+    use_keychain: bool,
+    honor_env: bool,
+) -> Result<SecretLoadOutcome> {
     std::fs::create_dir_all(data_dir).with_context(|| format!("create {}", data_dir.display()))?;
 
-    if let Ok(hex) = std::env::var("IROH_SECRET") {
-        let secret = parse_secret_hex(&hex)?;
+    if honor_env {
+        if let Ok(hex) = std::env::var("IROH_SECRET") {
+            let secret = parse_secret_hex(&hex)?;
 
-        return Ok(SecretLoadOutcome {
-            secret,
-            source: SecretSource::EnvVar,
-        });
+            return Ok(SecretLoadOutcome {
+                secret,
+                source: SecretSource::EnvVar,
+            });
+        }
     }
 
     let file_path = identity_key_path(data_dir);
     let file_secret = read_identity_file(&file_path)?;
-    let keychain_secret = read_keychain_secret()?;
+    let keychain_secret = if use_keychain {
+        read_keychain_secret()?
+    } else {
+        None
+    };
 
     match (file_secret, keychain_secret) {
         (Some(file), Some(keychain)) if secrets_equal(&file, &keychain) => {
@@ -64,14 +80,14 @@ pub fn load_or_create_secret(data_dir: &Path) -> Result<SecretLoadOutcome> {
         }
         (Some(file), Some(_keychain)) => {
 
-            sync_keychain_best_effort(&file);
+            sync_keychain(use_keychain, &file);
             Ok(SecretLoadOutcome {
                 secret: file,
                 source: SecretSource::IdentityFile,
             })
         }
         (Some(file), None) => {
-            sync_keychain_best_effort(&file);
+            sync_keychain(use_keychain, &file);
 
             Ok(SecretLoadOutcome {
                 secret: file,
@@ -80,7 +96,7 @@ pub fn load_or_create_secret(data_dir: &Path) -> Result<SecretLoadOutcome> {
         }
         (None, Some(keychain)) => {
             write_identity_file(&file_path, &keychain)?;
-            sync_keychain_best_effort(&keychain);
+            sync_keychain(use_keychain, &keychain);
 
             Ok(SecretLoadOutcome {
                 secret: keychain,
@@ -90,7 +106,7 @@ pub fn load_or_create_secret(data_dir: &Path) -> Result<SecretLoadOutcome> {
         (None, None) => {
             let secret = SecretKey::generate();
             write_identity_file(&file_path, &secret)?;
-            sync_keychain_best_effort(&secret);
+            sync_keychain(use_keychain, &secret);
 
             Ok(SecretLoadOutcome {
                 secret,
@@ -154,6 +170,12 @@ fn read_keychain_secret() -> Result<Option<SecretKey>> {
     }
 }
 
+fn sync_keychain(enabled: bool, secret: &SecretKey) {
+    if enabled {
+        sync_keychain_best_effort(secret);
+    }
+}
+
 fn sync_keychain_best_effort(secret: &SecretKey) {
     let hex = HEXLOWER.encode(&secret.to_bytes());
     match secret_store::save_secret_hex(&hex) {
@@ -196,6 +218,24 @@ mod tests {
 
     static KEYCHAIN_TEST_LOCK: Mutex<()> = Mutex::new(());
 
+    /// Restores an env var when dropped.
+    struct EnvGuard(&'static str, Option<String>);
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            match &self.1 {
+                Some(v) => std::env::set_var(self.0, v),
+                None => std::env::remove_var(self.0),
+            }
+        }
+    }
+
+    fn set_env_for_test(key: &'static str, val: &str) -> EnvGuard {
+        let guard = EnvGuard(key, std::env::var(key).ok());
+        std::env::set_var(key, val);
+        guard
+    }
+
     fn lock_keychain_tests() -> MutexGuard<'static, ()> {
         KEYCHAIN_TEST_LOCK
             .lock()
@@ -216,6 +256,7 @@ mod tests {
 
     #[test]
     fn generated_secret_is_stable_across_restarts() {
+        let _guard = lock_keychain_tests();
         let dir = TempDir::new().expect("tempdir");
         let first = load_or_create_secret(dir.path()).expect("first load");
         assert_eq!(first.source, SecretSource::Generated);
@@ -264,5 +305,28 @@ mod tests {
         assert!(identity_key_path(dir.path()).exists());
 
         let _ = secret_store::delete_secret();
+    }
+
+    #[test]
+    fn keychain_free_load_never_touches_keychain_and_persists() {
+        let dir = TempDir::new().expect("tempdir");
+        secret_store::reset_call_count_for_tests();
+        let a = load_or_create_secret_with(dir.path(), false, false).unwrap();
+        let b = load_or_create_secret_with(dir.path(), false, false).unwrap();
+        assert_eq!(a.secret.to_bytes(), b.secret.to_bytes());
+        assert_eq!(a.source, SecretSource::Generated);
+        assert_eq!(b.source, SecretSource::IdentityFile);
+        assert_eq!(secret_store::call_count_for_tests(), 0);
+    }
+
+    #[test]
+    fn keychain_free_load_ignores_iroh_secret_env() {
+        let _guard = lock_keychain_tests();
+        let dir = TempDir::new().expect("tempdir");
+        let env_key = SecretKey::generate();
+        let _env = set_env_for_test("IROH_SECRET", &HEXLOWER.encode(&env_key.to_bytes()));
+        let out = load_or_create_secret_with(dir.path(), false, false).unwrap();
+        assert_ne!(out.secret.to_bytes(), env_key.to_bytes());
+        assert_ne!(out.source, SecretSource::EnvVar);
     }
 }

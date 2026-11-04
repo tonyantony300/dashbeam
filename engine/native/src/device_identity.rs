@@ -253,11 +253,49 @@ impl DeviceIdentity {
     }
 }
 
+/// Identity loading knobs. Default matches the desktop app's behavior.
+#[derive(Debug, Clone)]
+pub struct IdentityOptions {
+    pub use_keychain: bool,
+    pub honor_env_secret: bool,
+    /// Pinned device type; `None` auto-detects.
+    pub device_type: Option<String>,
+    /// Display name for new/placeholder metadata; `None` uses the host name.
+    pub default_display_name: Option<String>,
+}
+
+impl Default for IdentityOptions {
+    fn default() -> Self {
+        Self {
+            use_keychain: true,
+            honor_env_secret: true,
+            device_type: None,
+            default_display_name: None,
+        }
+    }
+}
+
 pub fn load_or_create_identity(data_dir: &Path) -> anyhow::Result<DeviceIdentity> {
+    load_or_create_identity_with(data_dir, &IdentityOptions::default())
+}
+
+pub fn load_or_create_identity_with(
+    data_dir: &Path,
+    opts: &IdentityOptions,
+) -> anyhow::Result<DeviceIdentity> {
     std::fs::create_dir_all(data_dir)?;
     let meta_path = data_dir.join("device.json");
+    let fresh_name = || {
+        opts.default_display_name
+            .clone()
+            .unwrap_or_else(default_display_name)
+    };
 
-    let outcome = identity_store::load_or_create_secret(data_dir)?;
+    let outcome = identity_store::load_or_create_secret_with(
+        data_dir,
+        opts.use_keychain,
+        opts.honor_env_secret,
+    )?;
     let secret = outcome.secret;
     // Node identity is only for the persistent control endpoint. Share/receive
     // sessions use ephemeral keys via get_or_create_secret() so they do not
@@ -288,7 +326,7 @@ pub fn load_or_create_identity(data_dir: &Path) -> anyhow::Result<DeviceIdentity
         meta.migrate();
         // Refresh auto-detected hostname only when the user has not renamed.
         if !meta.name_is_custom {
-            let detected = default_display_name();
+            let detected = fresh_name();
             if is_placeholder_display_name(&meta.display_name) {
                 meta.display_name = detected;
             }
@@ -298,10 +336,17 @@ pub fn load_or_create_identity(data_dir: &Path) -> anyhow::Result<DeviceIdentity
         }
         // Re-detect form factor on load (not user-editable yet) so older
         // Linux/Windows installs that were hard-coded as "desktop" self-heal.
-        meta.device_type = default_device_type();
+        meta.device_type = opts
+            .device_type
+            .clone()
+            .unwrap_or_else(default_device_type);
         meta
     } else {
-        DeviceMetaFile::new(endpoint_id, default_display_name(), default_device_type())
+        DeviceMetaFile::new(
+            endpoint_id,
+            fresh_name(),
+            opts.device_type.clone().unwrap_or_else(default_device_type),
+        )
     };
 
     meta.migrate();
@@ -523,5 +568,27 @@ mod trust_flag_tests {
         let mut d = device("aaaa");
         d.trusted = true;
         assert!(PairedDeviceInfo::from_device(d, true).trusted);
+    }
+}
+
+#[cfg(test)]
+mod identity_options_tests {
+    use super::*;
+
+    #[test]
+    fn pinned_device_type_and_default_name_survive_reload() {
+        let dir = tempfile::tempdir().unwrap();
+        let opts = IdentityOptions {
+            use_keychain: false,
+            honor_env_secret: false,
+            device_type: Some("agent".into()),
+            default_display_name: Some("Box Agent".into()),
+        };
+        let first = load_or_create_identity_with(dir.path(), &opts).unwrap();
+        assert_eq!(first.device_type(), "agent");
+        assert_eq!(first.display_name(), "Box Agent");
+        let again = load_or_create_identity_with(dir.path(), &opts).unwrap();
+        assert_eq!(again.device_type(), "agent");
+        assert_eq!(again.endpoint_id(), first.endpoint_id());
     }
 }

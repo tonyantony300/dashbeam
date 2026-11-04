@@ -25,7 +25,8 @@ use tokio::task::JoinHandle;
 use tracing::debug;
 
 use crate::device_identity::{
-    load_or_create_identity, DeviceIdentity, DeviceInfo, PairedDeviceInfo, PairedDeviceStore,
+    load_or_create_identity_with, DeviceIdentity, DeviceInfo, IdentityOptions, PairedDeviceInfo,
+    PairedDeviceStore,
 };
 use crate::lan_discovery::{LanDiscovery, LanEvent};
 use crate::nearby::{NearbyDevice, NearbyRegistry, ObserveOutcome};
@@ -815,8 +816,26 @@ impl NodeService {
         discoverability: Discoverability,
         app_handle: AppHandle,
     ) -> anyhow::Result<Self> {
+        Self::start_with(
+            data_dir,
+            relay_mode,
+            discovery_mode,
+            discoverability,
+            app_handle,
+            IdentityOptions::default(),
+        )
+        .await
+    }
 
-        let identity = Arc::new(load_or_create_identity(data_dir)?);
+    pub async fn start_with(
+        data_dir: &Path,
+        relay_mode: RelayMode,
+        discovery_mode: DiscoveryModeOption,
+        discoverability: Discoverability,
+        app_handle: AppHandle,
+        identity_options: IdentityOptions,
+    ) -> anyhow::Result<Self> {
+        let identity = Arc::new(load_or_create_identity_with(data_dir, &identity_options)?);
         let paired_store = Arc::new(PairedDeviceStore::new(data_dir));
         let allowed = load_allowed_from_store(&paired_store)?;
 
