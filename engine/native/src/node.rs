@@ -38,6 +38,8 @@ use crate::runtime::NodeRuntime;
 #[derive(Debug)]
 pub(crate) struct AccessState {
     pub(crate) allowed: HashSet<EndpointId>,
+    /// Peers that may pair even when no pairing host is open.
+    pub(crate) authorized: HashSet<EndpointId>,
     pub(crate) pairing_host_open: bool,
     pub(crate) discoverability: Discoverability,
 }
@@ -88,15 +90,16 @@ impl EndpointHooks for PairedOnlyHook {
                 reason: b"blocked peer".to_vec(),
             };
         }
-        let (allowed, pairing_host_open, discoverability) = {
+        let (allowed, authorized, pairing_host_open, discoverability) = {
             let access = self.access.read().await;
             (
                 access.allowed.contains(&remote),
+                access.authorized.contains(&remote),
                 access.pairing_host_open,
                 access.discoverability,
             )
         };
-        if pairing_host_open || allowed {
+        if pairing_host_open || allowed || authorized {
 
             return AfterHandshakeOutcome::accept();
         }
@@ -161,13 +164,19 @@ impl std::fmt::Debug for ControlProtocol {
 impl ControlProtocol {
     async fn handle_connection(&self, conn: Connection) -> anyhow::Result<()> {
         let remote = conn.remote_id();
-        let pairing_host_open = self.ctx.access.read().await.pairing_host_open;
+        let (mut pairing_host_open, authorized) = {
+            let access = self.ctx.access.read().await;
+            (access.pairing_host_open, access.authorized.contains(&remote))
+        };
         let allowed = self.is_allowed(&remote).await;
 
         if allowed {
 
             return self.handle_control_session(conn, true).await;
         }
+
+        // Authorized peers get the pairing-host session without an open host.
+        pairing_host_open |= authorized;
 
         if !pairing_host_open {
             // Accepted only because we're discoverable: serve the reduced
@@ -862,6 +871,7 @@ impl NodeService {
 
         let access = Arc::new(RwLock::new(AccessState {
             allowed: allowed.clone(),
+            authorized: HashSet::new(),
             pairing_host_open: false,
             discoverability,
         }));
@@ -1191,6 +1201,17 @@ impl NodeService {
 
     /// Immediate pairing code from local identity. Never waits on presence or
     /// relay probes — optional custom-relay hint is best-effort via try_lock.
+    /// Replace the set of peers allowed to pair without an open pairing host.
+    /// Rejects the whole update if any id is invalid.
+    pub async fn set_authorized_peers(&self, ids: Vec<String>) -> anyhow::Result<()> {
+        let set = ids
+            .iter()
+            .map(|id| EndpointId::from_str(id).with_context(|| format!("invalid endpoint id: {id}")))
+            .collect::<anyhow::Result<HashSet<_>>>()?;
+        self.access.write().await.authorized = set;
+        Ok(())
+    }
+
     pub fn pairing_ticket(&self) -> anyhow::Result<String> {
         let relay_url = match self.runtime.try_lock() {
             Ok(runtime) => {
