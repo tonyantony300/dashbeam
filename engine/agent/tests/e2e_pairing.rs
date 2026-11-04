@@ -115,3 +115,33 @@ async fn agent_wrappers_refuse_without_flag() {
     assert_ne!(e.to_string(), want);
     svc.shutdown().await.unwrap();
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn manual_untrust_survives_later_pairings() {
+    let dirs: Vec<_> = (0..3).map(|_| tempfile::tempdir().unwrap()).collect();
+    let (id_a, id_b) = (
+        learn_id(dirs[0].path()).await,
+        learn_id(dirs[1].path()).await,
+    );
+    let a = start_agent(dirs[0].path(), lists(&id_b, true), false).await;
+    let b = start_agent(dirs[1].path(), lists(&id_a, false), false).await;
+    wait_for("A trusts B", || {
+        paired(&a, &id_b).is_some_and(|d| d.trusted)
+    })
+    .await;
+
+    a.trust(&id_b, false).unwrap();
+
+    // An unrelated pairing fires `device-paired` on A again.
+    let c = start_agent(dirs[2].path(), AgentConfig::default(), false).await;
+    let code = a.host_pairing(Some(60)).await.unwrap();
+    c.join(&code).await.unwrap();
+    let id_c = c.identity().endpoint_id;
+    wait_for("A pairs C", || paired(&a, &id_c).is_some()).await;
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    assert!(!paired(&a, &id_b).unwrap().trusted, "untrust was reverted");
+
+    for s in [&a, &b, &c] {
+        s.shutdown().await.unwrap();
+    }
+}

@@ -5,6 +5,7 @@ use crate::devices::{resolve_device, resolve_index, ResolveError};
 use crate::service::AgentService;
 use anyhow::{anyhow, bail, Result};
 use engine::{PairedDeviceInfo, PairingTicket};
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::watch;
@@ -35,19 +36,40 @@ impl AgentService {
             .collect()
     }
 
-    /// Trusts every paired-but-untrusted device whose authorized entry has `trust = true`.
+    /// Records the currently paired ids as the baseline for `apply_authorized_trust`.
+    pub(crate) fn snapshot_paired(&self) {
+        let ids = self.paired_ids();
+        *self.paired_seen.lock().expect("paired seen lock") = ids;
+    }
+
+    fn paired_ids(&self) -> HashSet<String> {
+        self.list_devices()
+            .map(|ds| {
+                ds.into_iter()
+                    .map(|d| d.endpoint_id.to_lowercase())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Trusts peers that became paired since the last snapshot and have an
+    /// authorized `trust = true` entry. Earlier pairings are never re-trusted,
+    /// so a manual untrust sticks.
     pub(crate) fn apply_authorized_trust(&self) {
-        let Ok(paired) = self.list_devices() else {
-            return;
+        let new: Vec<String> = {
+            let mut seen = self.paired_seen.lock().expect("paired seen lock");
+            let now = self.paired_ids();
+            let new = now.difference(&seen).cloned().collect();
+            *seen = now;
+            new
         };
         for p in self.config().pairing.authorized.iter().filter(|p| p.trust) {
-            let untrusted = paired
-                .iter()
-                .find(|d| d.endpoint_id.eq_ignore_ascii_case(&p.endpoint_id) && !d.trusted);
-            if let Some(d) = untrusted {
-                if let Err(e) = self.node().trust_paired(&d.endpoint_id, true) {
-                    tracing::warn!(peer = %d.endpoint_id, error = %e, "apply authorized trust failed");
-                }
+            let id = p.endpoint_id.to_lowercase();
+            if !new.contains(&id) {
+                continue;
+            }
+            if let Err(e) = self.node().trust_paired(&id, true) {
+                tracing::warn!(peer = %id, error = %e, "apply authorized trust failed");
             }
         }
     }
@@ -179,7 +201,7 @@ async fn join_authorized(
                     return;
                 }
                 Err(e) => {
-                    tracing::debug!(peer = %endpoint_id, error = %e, "authorized pairing attempt failed")
+                    tracing::warn!(peer = %endpoint_id, error = %e, "authorized pairing attempt failed")
                 }
             }
         }

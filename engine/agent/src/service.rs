@@ -50,6 +50,8 @@ pub struct AgentService {
     event_loop: Mutex<Option<JoinHandle<()>>>,
     auto_worker: Mutex<Option<JoinHandle<()>>>,
     pairing_tasks: Mutex<Vec<JoinHandle<()>>>,
+    /// Lowercase ids already paired when trust was last evaluated.
+    pub(crate) paired_seen: Mutex<std::collections::HashSet<String>>,
     shut_down: AtomicBool,
 }
 
@@ -122,6 +124,7 @@ impl AgentService {
             event_loop: Mutex::new(None),
             auto_worker: Mutex::new(None),
             pairing_tasks: Mutex::new(Vec::new()),
+            paired_seen: Mutex::new(Default::default()),
             shut_down: AtomicBool::new(false),
         });
         let handle = tokio::spawn(run_event_loop(Arc::downgrade(&svc), events_rx, stop_rx));
@@ -133,6 +136,7 @@ impl AgentService {
         ));
         *svc.auto_worker.lock().expect("auto worker lock") = Some(worker);
 
+        svc.snapshot_paired();
         *svc.pairing_tasks.lock().expect("pairing tasks lock") = svc.spawn_authorized_pairing();
 
         let me = svc.identity();
