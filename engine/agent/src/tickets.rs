@@ -17,11 +17,25 @@ use tokio::time::Instant;
 const POLL: Duration = Duration::from_millis(500);
 /// Extra time past expiry for a download that is still moving bytes.
 const STALL_GRACE: Duration = Duration::from_secs(30);
+/// Hard stop past expiry, however long a download keeps moving.
+const HARD_STOP_AFTER_EXPIRY: Duration = Duration::from_secs(600);
+
+/// Next deadline after `now` passed `deadline` with a download that moved
+/// bytes: one grace window, never past `hard_stop`. `None` means stop now.
+fn extend_deadline(now: Instant, hard_stop: Instant, progressed: bool) -> Option<Instant> {
+    if !progressed || now >= hard_stop {
+        return None;
+    }
+    Some((now + STALL_GRACE).min(hard_stop))
+}
 
 impl AgentService {
     /// Shares `paths` behind a one-time ticket and returns at once. The share
-    /// stops after its first completed download (`Delivered`) or at expiry
-    /// (`Expired`). `ttl_secs` defaults to `config.ticket_ttl_secs`.
+    /// stops on the engine's `transfer-completed` for the first finished
+    /// download (`Delivered`), with a `completed_peers()` poll as backstop, or
+    /// at expiry (`Expired`). One-time is best effort: a second peer already
+    /// mid-transfer when the first completes may still finish; strict gating
+    /// would need an engine change. `ttl_secs` defaults to `config.ticket_ttl_secs`.
     pub async fn share_ticket(
         self: &Arc<Self>,
         paths: Vec<PathBuf>,
@@ -111,6 +125,7 @@ impl AgentService {
     ) {
         let mut stop = self.stop_signal();
         let mut deadline = Instant::now() + ttl;
+        let hard_stop = deadline + HARD_STOP_AFTER_EXPIRY;
         let mut seen_bytes = 0;
         let mut tick = tokio::time::interval(POLL);
         let (status, error) = loop {
@@ -132,6 +147,9 @@ impl AgentService {
                         (TransferStatus::Cancelled, Some("agent shut down".to_string()))
                     };
                 }
+                _ = progress.completed.notified() => {
+                    break (TransferStatus::Delivered, None);
+                }
                 _ = tick.tick() => {
                     if delivered() {
                         break (TransferStatus::Delivered, None);
@@ -143,9 +161,10 @@ impl AgentService {
                     }
                     // Don't cut off a download that is still moving.
                     let bytes = progress.bytes();
-                    if bytes > seen_bytes {
-                        seen_bytes = bytes;
-                        deadline = Instant::now() + STALL_GRACE;
+                    let progressed = bytes > seen_bytes;
+                    seen_bytes = bytes;
+                    if let Some(next) = extend_deadline(Instant::now(), hard_stop, progressed) {
+                        deadline = next;
                         continue;
                     }
                     break (
@@ -211,5 +230,21 @@ impl AgentService {
         self.registry()
             .get(&rec.id)
             .context("transfer record was evicted")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test(start_paused = true)]
+    async fn grace_is_bounded_by_hard_stop() {
+        let t0 = Instant::now();
+        let hard = t0 + HARD_STOP_AFTER_EXPIRY;
+        assert_eq!(extend_deadline(t0, hard, false), None);
+        assert_eq!(extend_deadline(t0, hard, true), Some(t0 + STALL_GRACE));
+        let near = hard - Duration::from_secs(5);
+        assert_eq!(extend_deadline(near, hard, true), Some(hard));
+        assert_eq!(extend_deadline(hard, hard, true), None);
     }
 }

@@ -466,6 +466,8 @@ pub(crate) struct SendProgress {
     id: String,
     bytes: AtomicU64,
     started: AtomicBool,
+    /// Signalled when the engine reports a peer finished (`transfer-completed`).
+    pub(crate) completed: tokio::sync::Notify,
 }
 
 impl SendProgress {
@@ -475,6 +477,7 @@ impl SendProgress {
             id,
             bytes: AtomicU64::new(0),
             started: AtomicBool::new(false),
+            completed: tokio::sync::Notify::new(),
         }
     }
 
@@ -496,6 +499,9 @@ impl EventEmitter for SendProgress {
     }
 
     fn emit_event_with_payload(&self, name: &str, payload: &str) -> Result<(), String> {
+        if name == "transfer-completed" {
+            self.completed.notify_one();
+        }
         if name == "transfer-progress" {
             if let Some((bytes, _total)) = parse_progress(payload) {
                 self.bytes.fetch_max(bytes, Ordering::SeqCst);
