@@ -266,7 +266,7 @@ impl AgentService {
             // Progress arrives on per-transfer emitters, not the node's.
             "transfer-progress" | "receive-progress" => {}
             "device-paired" => self.on_device_paired(),
-            "device-unpaired" => {}
+            "device-unpaired" => self.on_device_unpaired(),
             _ => {}
         }
     }

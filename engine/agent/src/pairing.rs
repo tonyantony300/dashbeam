@@ -42,6 +42,15 @@ impl AgentService {
         *self.paired_seen.lock().expect("paired seen lock") = ids;
     }
 
+    /// Drops ids that are no longer paired so a later re-pair counts as new.
+    pub(crate) fn prune_paired_seen(&self) {
+        let now = self.paired_ids();
+        self.paired_seen
+            .lock()
+            .expect("paired seen lock")
+            .retain(|id| now.contains(id));
+    }
+
     fn paired_ids(&self) -> HashSet<String> {
         self.list_devices()
             .map(|ds| {
@@ -78,6 +87,12 @@ impl AgentService {
     pub(crate) fn on_device_paired(self: &Arc<Self>) {
         let svc = self.clone();
         tokio::task::spawn_blocking(move || svc.apply_authorized_trust());
+    }
+
+    /// Handler for `device-unpaired` (remote unpair); never blocks the event loop.
+    pub(crate) fn on_device_unpaired(self: &Arc<Self>) {
+        let svc = self.clone();
+        tokio::task::spawn_blocking(move || svc.prune_paired_seen());
     }
 
     /// This node's pairing code, for the other side's `join`.
@@ -127,7 +142,9 @@ impl AgentService {
     /// Unpairs a device. Removing it from `pairing.authorized` never unpairs.
     pub async fn forget(&self, query: &str) -> Result<()> {
         let d = self.resolve_paired(query)?;
-        self.node().forget_paired(&d.endpoint_id).await
+        self.node().forget_paired(&d.endpoint_id).await?;
+        self.prune_paired_seen();
+        Ok(())
     }
 
     /// `pair_nearby` for agent callers; gated by `--dangerously-allow-agent-pairing`.

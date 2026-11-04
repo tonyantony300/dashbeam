@@ -145,3 +145,37 @@ async fn manual_untrust_survives_later_pairings() {
         s.shutdown().await.unwrap();
     }
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn forget_then_repair_trusts_again() {
+    let (da, db) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let (id_a, id_b) = (learn_id(da.path()).await, learn_id(db.path()).await);
+    let a = start_agent(da.path(), lists(&id_b, true), false).await;
+    let b = start_agent(db.path(), lists(&id_a, false), false).await;
+    wait_for("A trusts B", || {
+        paired(&a, &id_b).is_some_and(|d| d.trusted)
+    })
+    .await;
+
+    a.forget(&id_b).await.unwrap();
+    assert!(paired(&a, &id_b).is_none());
+
+    // B may still be tearing down its side of the old pairing; retry the join.
+    let code = b.pairing_code().unwrap();
+    let mut joined = a.join(&code).await;
+    for _ in 0..5 {
+        if joined.is_ok() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        joined = a.join(&code).await;
+    }
+    joined.unwrap();
+    wait_for("A re-trusts B", || {
+        paired(&a, &id_b).is_some_and(|d| d.trusted)
+    })
+    .await;
+
+    a.shutdown().await.unwrap();
+    b.shutdown().await.unwrap();
+}
