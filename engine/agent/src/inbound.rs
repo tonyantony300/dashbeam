@@ -35,7 +35,7 @@ pub(crate) struct PairRequestPayload {
 }
 
 /// An invite waiting for an answer. At most one per device is listed: the oldest.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PendingInvite {
     pub invite_id: String,
     pub endpoint_id: String,

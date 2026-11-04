@@ -1,5 +1,5 @@
 [workspace]
-members = [".", "protocol", "native", "wasm-io", "agent"]
+members = [".", "protocol", "native", "wasm-io", "agent", "cli"]
 resolver = "2"
 
 [package]
