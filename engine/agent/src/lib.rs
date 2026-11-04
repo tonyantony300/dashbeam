@@ -3,3 +3,4 @@
 pub mod config;
 pub mod lock;
 pub mod paths;
+pub mod registry;
