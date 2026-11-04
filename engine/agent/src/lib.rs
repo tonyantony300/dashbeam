@@ -9,6 +9,7 @@ pub mod inbound;
 pub mod lock;
 pub mod metadata;
 mod outbound;
+mod pairing;
 pub mod paths;
 pub mod registry;
 pub mod service;

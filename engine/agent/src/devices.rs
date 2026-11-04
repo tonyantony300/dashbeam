@@ -45,56 +45,60 @@ pub fn resolve_device(
     devices: &[PairedDeviceInfo],
     query: &str,
 ) -> Result<PairedDeviceInfo, ResolveError> {
-    let q = query.trim();
-    if q.is_empty() {
-        return Err(ResolveError::NotFound {
-            query: query.to_string(),
-        });
-    }
-
-    if let Some(d) = devices
+    let entries: Vec<(&str, &str)> = devices
         .iter()
-        .find(|d| d.endpoint_id.eq_ignore_ascii_case(q))
-    {
-        return Ok(d.clone());
-    }
-
-    let by_name: Vec<&PairedDeviceInfo> = devices
-        .iter()
-        .filter(|d| d.display_name.trim().to_lowercase() == q.to_lowercase())
+        .map(|d| (d.endpoint_id.as_str(), d.display_name.as_str()))
         .collect();
-    if let Some(d) = pick_one(query, &by_name)? {
-        return Ok(d);
-    }
+    resolve_index(&entries, query).map(|i| devices[i].clone())
+}
 
+/// The matching rules of `resolve_device` over `(endpoint id, display name)`
+/// pairs, returning the index of the single match.
+pub fn resolve_index(entries: &[(&str, &str)], query: &str) -> Result<usize, ResolveError> {
+    let q = query.trim();
+    let not_found = || ResolveError::NotFound {
+        query: query.to_string(),
+    };
+    if q.is_empty() {
+        return Err(not_found());
+    }
+    if let Some(i) = entries
+        .iter()
+        .position(|(id, _)| id.eq_ignore_ascii_case(q))
+    {
+        return Ok(i);
+    }
+    let lower = q.to_lowercase();
+    let by_name: Vec<usize> = (0..entries.len())
+        .filter(|&i| entries[i].1.trim().to_lowercase() == lower)
+        .collect();
+    if let Some(i) = pick_one(query, entries, &by_name)? {
+        return Ok(i);
+    }
     if q.len() >= MIN_PREFIX_LEN {
-        let lower = q.to_lowercase();
-        let by_prefix: Vec<&PairedDeviceInfo> = devices
-            .iter()
-            .filter(|d| d.endpoint_id.to_lowercase().starts_with(&lower))
+        let by_prefix: Vec<usize> = (0..entries.len())
+            .filter(|&i| entries[i].0.to_lowercase().starts_with(&lower))
             .collect();
-        if let Some(d) = pick_one(query, &by_prefix)? {
-            return Ok(d);
+        if let Some(i) = pick_one(query, entries, &by_prefix)? {
+            return Ok(i);
         }
     }
-
-    Err(ResolveError::NotFound {
-        query: query.to_string(),
-    })
+    Err(not_found())
 }
 
 fn pick_one(
     query: &str,
-    matches: &[&PairedDeviceInfo],
-) -> Result<Option<PairedDeviceInfo>, ResolveError> {
+    entries: &[(&str, &str)],
+    matches: &[usize],
+) -> Result<Option<usize>, ResolveError> {
     match matches {
         [] => Ok(None),
-        [one] => Ok(Some((*one).clone())),
+        [one] => Ok(Some(*one)),
         many => Err(ResolveError::Ambiguous {
             query: query.to_string(),
             candidates: many
                 .iter()
-                .map(|d| (d.display_name.clone(), d.endpoint_id.clone()))
+                .map(|&i| (entries[i].1.to_string(), entries[i].0.to_string()))
                 .collect(),
         }),
     }

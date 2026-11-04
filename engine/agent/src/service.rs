@@ -49,6 +49,7 @@ pub struct AgentService {
     stop_tx: watch::Sender<bool>,
     event_loop: Mutex<Option<JoinHandle<()>>>,
     auto_worker: Mutex<Option<JoinHandle<()>>>,
+    pairing_tasks: Mutex<Vec<JoinHandle<()>>>,
     shut_down: AtomicBool,
 }
 
@@ -120,6 +121,7 @@ impl AgentService {
             stop_tx,
             event_loop: Mutex::new(None),
             auto_worker: Mutex::new(None),
+            pairing_tasks: Mutex::new(Vec::new()),
             shut_down: AtomicBool::new(false),
         });
         let handle = tokio::spawn(run_event_loop(Arc::downgrade(&svc), events_rx, stop_rx));
@@ -130,6 +132,8 @@ impl AgentService {
             svc.stop_signal(),
         ));
         *svc.auto_worker.lock().expect("auto worker lock") = Some(worker);
+
+        *svc.pairing_tasks.lock().expect("pairing tasks lock") = svc.spawn_authorized_pairing();
 
         let me = svc.identity();
         tracing::info!(
@@ -233,6 +237,11 @@ impl AgentService {
             worker.abort();
             let _ = worker.await;
         }
+        let tasks = std::mem::take(&mut *self.pairing_tasks.lock().expect("pairing tasks lock"));
+        for t in tasks {
+            t.abort();
+            let _ = t.await;
+        }
         self.node.shutdown().await
     }
 
@@ -252,8 +261,8 @@ impl AgentService {
             "paired-invite-response" => self.on_invite_response(payload),
             // Progress arrives on per-transfer emitters, not the node's.
             "transfer-progress" | "receive-progress" => {}
-            // Pairing state changes (Task 9).
-            "device-paired" | "device-unpaired" => {}
+            "device-paired" => self.on_device_paired(),
+            "device-unpaired" => {}
             _ => {}
         }
     }
