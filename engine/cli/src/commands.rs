@@ -100,6 +100,8 @@ pub enum Cmd {
     },
     /// Cancel a queued or running transfer.
     Cancel { transfer_id: String },
+    /// Serve MCP over stdio for AI agents (auto-starts the node).
+    Mcp,
 }
 
 #[derive(Debug, Args)]
@@ -239,6 +241,12 @@ pub async fn run(cli: Cli, iroh_secret_was_set: bool) -> Result<i32> {
             emit(json, &list, || print_transfers(&list))
         }
         Cmd::Inbox { action } => inbox(&dir, action, json).await,
+        Cmd::Mcp => {
+            // stdout carries the protocol; logs go to stderr.
+            init_tracing(true);
+            crate::mcp::serve_stdio(&dir).await?;
+            Ok(0)
+        }
         Cmd::Cancel { transfer_id } => {
             let rec: TransferRecord = node(&dir)
                 .await?
@@ -265,7 +273,7 @@ fn emit<T: Serialize>(json: bool, value: &T, human: impl FnOnce()) -> Result<i32
 }
 
 /// Absolute paths against this process's cwd (never the daemon's); each must exist.
-fn absolutize(paths: &[PathBuf]) -> Result<(Vec<PathBuf>, PathBuf)> {
+pub(crate) fn absolutize(paths: &[PathBuf]) -> Result<(Vec<PathBuf>, PathBuf)> {
     let cwd = std::env::current_dir().context("read the current directory")?;
     let mut out = Vec::with_capacity(paths.len());
     for p in paths {
