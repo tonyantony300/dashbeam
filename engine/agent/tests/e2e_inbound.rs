@@ -86,10 +86,15 @@ async fn spawn_sender(name: &str, discoverability: Discoverability) -> Sender {
 }
 
 async fn start_agent(dir: &Path, config: AgentConfig) -> Arc<AgentService> {
+    start_agent_with(dir, config, false).await
+}
+
+/// `allow` = `--dangerously-allow-agent-pairing`.
+async fn start_agent_with(dir: &Path, config: AgentConfig, allow: bool) -> Arc<AgentService> {
     AgentService::start(AgentOptions {
         data_dir: dir.to_path_buf(),
         config,
-        allow_agent_pairing: false,
+        allow_agent_pairing: allow,
         discoverable_override: false,
         approver: Arc::new(DenyAll),
     })
@@ -443,6 +448,75 @@ async fn preapproved_nearby_invite_is_received() {
     assert!(agent.list_incoming().is_empty());
 
     drop(shared);
+    agent.shutdown().await.unwrap();
+    sender.node.shutdown().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn flag_holds_nearby_invite_for_accept_incoming() {
+    let sender = spawn_sender("Stranger", Discoverability::Everyone).await;
+    let agent_dir = tempfile::tempdir().unwrap();
+    let agent = start_agent_with(agent_dir.path(), everyone(AgentConfig::default()), true).await;
+    let agent_id = agent.identity().endpoint_id;
+
+    sender.node.inject_nearby_device_for_tests(&agent_id).await;
+    let src = tempfile::tempdir().unwrap();
+    let shared = share(src.path(), "hi.txt", b"hello").await;
+    let delivered = sender
+        .node
+        .invite_nearby_device(&agent_id, &shared.ticket, 1, 5)
+        .await
+        .expect("nearby invite");
+    assert!(delivered);
+
+    wait_for("a pending nearby invite", || {
+        agent.list_incoming().len() == 1
+    })
+    .await;
+    // The flag never auto-accepts, and DenyAll leaves it to the API.
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    assert_eq!(agent.list_incoming().len(), 1);
+    assert!(agent
+        .registry()
+        .list(None, Some(Direction::Inbound))
+        .is_empty());
+    assert!(agent.list_devices().unwrap().is_empty());
+    assert!(!declined(&sender));
+
+    let pending = agent.list_incoming().remove(0);
+    assert_eq!(pending.endpoint_id, sender.id());
+    let started = agent.accept_incoming(&pending.invite_id).await.unwrap();
+    assert_eq!(started.status, TransferStatus::Transferring);
+    let rec = wait_single_inbound(&agent).await;
+    assert_eq!(rec.status, TransferStatus::Received, "{rec:?}");
+    // Accepting a nearby invite pairs the sender.
+    let id = sender.id();
+    assert!(knows(&agent.list_devices().unwrap(), &id));
+
+    drop(shared);
+    agent.shutdown().await.unwrap();
+    sender.node.shutdown().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn flag_does_not_accept_nearby_pair_request() {
+    let sender = spawn_sender("Stranger", Discoverability::Everyone).await;
+    let agent_dir = tempfile::tempdir().unwrap();
+    let agent = start_agent_with(agent_dir.path(), everyone(AgentConfig::default()), true).await;
+    let agent_id = agent.identity().endpoint_id;
+
+    sender.node.inject_nearby_device_for_tests(&agent_id).await;
+    let delivered = sender
+        .node
+        .request_nearby_pair(&agent_id)
+        .await
+        .expect("pair request");
+    assert!(delivered);
+
+    wait_for("the sender to see the decline", || declined(&sender)).await;
+    assert!(agent.list_devices().unwrap().is_empty());
+    assert!(sender.node.list_paired().unwrap().is_empty());
+
     agent.shutdown().await.unwrap();
     sender.node.shutdown().await.unwrap();
 }

@@ -91,6 +91,15 @@ impl AgentService {
             opts.config.discoverability.to_engine()
         };
 
+        if opts.allow_agent_pairing {
+            tracing::warn!(
+                "--dangerously-allow-agent-pairing: agents may send nearby pair requests, \
+                 trust or untrust paired devices, and accept pending invites from unpaired \
+                 nearby devices (which pairs them). Nothing is accepted automatically; \
+                 incoming pair requests still need pairing.authorized or a terminal yes."
+            );
+        }
+
         let (emitter, events_rx) = ChannelEmitter::new();
         let node = NodeService::start_with(
             &opts.data_dir,

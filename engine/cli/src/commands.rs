@@ -112,8 +112,11 @@ pub struct UpArgs {
     /// Be visible to everyone on the LAN (discoverability `everyone`).
     #[arg(long)]
     pub discoverable: bool,
-    /// Let agents (MCP) pair with nearby devices, trust devices, and accept
-    /// nearby invites. Never a config key.
+    /// Let agents (MCP) send nearby pair requests, trust or untrust paired
+    /// devices, and accept pending invites from unpaired nearby devices
+    /// (which pairs them). Nothing is accepted automatically; incoming pair
+    /// requests still need `pairing.authorized` or a terminal yes. Never a
+    /// config key.
     #[arg(long)]
     pub dangerously_allow_agent_pairing: bool,
     /// Started by a client's auto-start; logs go to the data dir's node.log.
@@ -384,10 +387,6 @@ async fn up(dir: &Path, args: UpArgs, iroh_secret_was_set: bool) -> Result<i32> 
     } else {
         StartedBy::Hand
     };
-    if args.dangerously_allow_agent_pairing {
-        tracing::warn!("agent pairing is allowed (--dangerously-allow-agent-pairing)");
-    }
-
     let svc = AgentService::start(AgentOptions {
         data_dir: dir.to_path_buf(),
         config,

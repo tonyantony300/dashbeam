@@ -200,10 +200,11 @@ impl AgentService {
                 return;
             }
         };
-        match device {
-            Some(d) if should_auto_accept(&d) => self.enqueue_auto(invite),
-            Some(_) => self.hold_pending(invite, false),
-            None if self.preapproved(&invite.remote_endpoint_id) => {
+        let authorized = self.is_authorized(&invite.remote_endpoint_id);
+        match route_for(device.as_ref(), authorized) {
+            Route::Auto => self.enqueue_auto(invite),
+            Route::Pending { nearby } => self.hold_pending(invite, nearby),
+            Route::PreApproved => {
                 let svc = self.clone();
                 tokio::spawn(async move {
                     let info = pending_info(&invite);
@@ -215,7 +216,6 @@ impl AgentService {
                     }
                 });
             }
-            None => self.hold_pending(invite, true),
         }
     }
 
@@ -330,8 +330,11 @@ impl AgentService {
                 continue;
             };
 
-            // A non-interactive approver leaves paired invites to the API.
-            let consult = nearby || self.approver().answers_paired_invites();
+            let consult = consult_approver(
+                nearby,
+                self.allow_agent_pairing(),
+                self.approver().answers_paired_invites(),
+            );
             let approver = self.approver().clone();
             let ask = async {
                 if consult {
@@ -458,7 +461,9 @@ impl AgentService {
         }
     }
 
-    /// `nearby-pair-request-received`: the same gate as a nearby invite.
+    /// `nearby-pair-request-received`: accepted only for `pairing.authorized`
+    /// ids or a human's yes. `--dangerously-allow-agent-pairing` does not
+    /// accept pair requests.
     pub(crate) fn on_pair_request(self: &Arc<Self>, payload: Option<&str>) {
         let Some(payload) = payload else { return };
         let req = match serde_json::from_str::<PairRequestPayload>(payload) {
@@ -471,7 +476,7 @@ impl AgentService {
         let svc = self.clone();
         tokio::spawn(async move {
             let id = req.remote_endpoint_id.as_str();
-            let accept = svc.preapproved(id) || {
+            let accept = svc.is_authorized(id) || {
                 let timeout = Duration::from_secs(svc.config().invite_timeout_secs);
                 let ask = svc.approver().approve_pairing(&req.sender_name, id);
                 let mut stop = svc.stop_signal();
@@ -499,15 +504,13 @@ impl AgentService {
             .find(|d| d.endpoint_id.eq_ignore_ascii_case(endpoint_id)))
     }
 
-    /// Unpaired senders may only be accepted by config or the dangerous flag.
-    fn preapproved(&self, endpoint_id: &str) -> bool {
-        self.allow_agent_pairing()
-            || self
-                .config()
-                .pairing
-                .authorized
-                .iter()
-                .any(|p| p.endpoint_id.eq_ignore_ascii_case(endpoint_id))
+    /// Listed in `pairing.authorized`: the only automatic yes for an unpaired sender.
+    fn is_authorized(&self, endpoint_id: &str) -> bool {
+        self.config()
+            .pairing
+            .authorized
+            .iter()
+            .any(|p| p.endpoint_id.eq_ignore_ascii_case(endpoint_id))
     }
 
     /// The locally stored name wins, as in the app's `subFolderFor`.
@@ -653,6 +656,38 @@ fn should_auto_accept(d: &PairedDeviceInfo) -> bool {
     d.trusted && d.pairing_status.is_active()
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum Route {
+    Auto,
+    /// Held for an answer; `nearby` = accepting pairs (or re-pairs) the sender.
+    Pending {
+        nearby: bool,
+    },
+    /// Unpaired but listed in `pairing.authorized`: accepted without asking.
+    PreApproved,
+}
+
+/// A record that is no longer actively paired (unpaired remotely, stale
+/// identity) routes like no record at all.
+fn route_for(device: Option<&PairedDeviceInfo>, authorized: bool) -> Route {
+    match device {
+        Some(d) if should_auto_accept(d) => Route::Auto,
+        Some(d) if d.pairing_status.is_active() => Route::Pending { nearby: false },
+        _ if authorized => Route::PreApproved,
+        _ => Route::Pending { nearby: true },
+    }
+}
+
+/// Whether the approver decides a pending invite, racing the API. A
+/// non-interactive approver leaves paired invites to the API; nearby invites
+/// it declines, unless the dangerous flag lets the API accept them.
+fn consult_approver(nearby: bool, allow_agent_pairing: bool, answers_paired: bool) -> bool {
+    if nearby && !allow_agent_pairing {
+        return true;
+    }
+    answers_paired
+}
+
 fn pending_info(invite: &InvitePayload) -> PendingInvite {
     PendingInvite {
         invite_id: uuid::Uuid::new_v4().to_string(),
@@ -767,6 +802,54 @@ impl EventEmitter for ReceiveProgress {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn device(trusted: bool, status: engine::PairingStatus) -> PairedDeviceInfo {
+        PairedDeviceInfo {
+            endpoint_id: "abcd".into(),
+            display_name: "Laptop".into(),
+            device_type: "laptop".into(),
+            os: "macos".into(),
+            paired_at: 0,
+            last_seen_at: 0,
+            relay_url: None,
+            pairing_status: status,
+            trusted,
+            online: false,
+        }
+    }
+
+    #[test]
+    fn inactive_pairing_routes_as_nearby() {
+        use engine::PairingStatus::*;
+        let pending = |nearby| Route::Pending { nearby };
+        assert_eq!(route_for(Some(&device(true, Active)), false), Route::Auto);
+        assert_eq!(
+            route_for(Some(&device(false, Active)), true),
+            pending(false)
+        );
+        for status in [UnpairedRemotely, StaleLocalIdentity] {
+            for trusted in [true, false] {
+                let d = device(trusted, status);
+                assert_eq!(route_for(Some(&d), false), pending(true), "{status:?}");
+                assert_eq!(route_for(Some(&d), true), Route::PreApproved, "{status:?}");
+            }
+        }
+        assert_eq!(route_for(None, false), pending(true));
+        assert_eq!(route_for(None, true), Route::PreApproved);
+    }
+
+    #[test]
+    fn approver_consulted_unless_flag_leaves_nearby_to_api() {
+        // Without the flag a nearby invite is always the approver's call.
+        assert!(consult_approver(true, false, false));
+        assert!(consult_approver(true, false, true));
+        // With it, a non-interactive approver leaves it pending for accept_incoming.
+        assert!(!consult_approver(true, true, false));
+        assert!(consult_approver(true, true, true));
+        // Paired invites follow the approver's own preference.
+        assert!(!consult_approver(false, false, false));
+        assert!(consult_approver(false, true, true));
+    }
 
     #[test]
     fn parses_progress_payload() {
