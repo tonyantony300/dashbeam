@@ -78,10 +78,13 @@ impl AgentConfig {
         }
     }
 
+    /// A relative `receive_dir` is relative to the data dir, never the
+    /// process cwd (which is `/` for an auto-started node).
     pub fn receive_dir(&self, data_dir: &Path) -> PathBuf {
-        self.receive_dir
-            .clone()
-            .unwrap_or_else(|| data_dir.join("received"))
+        match &self.receive_dir {
+            Some(dir) => data_dir.join(dir),
+            None => data_dir.join("received"),
+        }
     }
 }
 
@@ -137,5 +140,15 @@ relay_url = "https://relay.example"
         assert!(!c.pairing.authorized[1].trust);
         assert_eq!(c.discoverability, DiscoverabilitySetting::Off);
         assert_eq!(c.receive_dir(d.path()), std::path::PathBuf::from("/tmp/rx"));
+    }
+
+    #[test]
+    fn relative_receive_dir_is_under_data_dir() {
+        let c = AgentConfig {
+            receive_dir: Some(PathBuf::from("inbox/files")),
+            ..AgentConfig::default()
+        };
+        let data = Path::new("/data/agent");
+        assert_eq!(c.receive_dir(data), data.join("inbox/files"));
     }
 }

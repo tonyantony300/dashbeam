@@ -226,7 +226,7 @@ impl DashbeamMcp {
     }
 
     #[tool(
-        description = "Sends to one of your paired devices. Trusted devices receive automatically; others must accept. Returns immediately; use wait_for_transfer for the outcome. 'expired' can also mean a busy receiver did not get to it in time. Paths are absolute or relative to this server's working directory. Returns the transfer record with its transfer_id."
+        description = "Sends to one of your paired devices. Trusted devices receive automatically; others must accept. Returns immediately; use wait_for_transfer for the outcome. 'expired' can also mean a busy receiver did not get to it in time. A late answer to an earlier expired invite may be attributed to the next send to the same device. Paths are absolute or relative to this server's working directory. Returns the transfer record with its transfer_id."
     )]
     async fn send_to_device(&self, Parameters(p): Parameters<SendParams>) -> CallToolResult {
         respond(

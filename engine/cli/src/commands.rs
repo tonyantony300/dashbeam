@@ -169,6 +169,12 @@ pub async fn run(cli: Cli, iroh_secret_was_set: bool) -> Result<i32> {
         Cmd::Status => status(&dir, json).await,
         Cmd::Name { name } => {
             let me: DeviceInfo = node(&dir).await?.call(Request::Rename { name }).await?;
+            if let Some(cfg) = config_name(&dir) {
+                eprintln!(
+                    "dashbeam: warning: config.toml sets name = \"{}\", which replaces this name the next time the node starts",
+                    safe(&cfg)
+                );
+            }
             emit(json, &me, || println!("{}", me.display_name))
         }
         Cmd::Id => {
@@ -273,6 +279,15 @@ fn emit<T: Serialize>(json: bool, value: &T, human: impl FnOnce()) -> Result<i32
         human();
     }
     Ok(0)
+}
+
+/// The `name` config.toml sets, if any; it wins over `dashbeam name` on next start.
+fn config_name(dir: &Path) -> Option<String> {
+    AgentConfig::load(dir)
+        .ok()?
+        .name
+        .map(|n| n.trim().to_string())
+        .filter(|n| !n.is_empty())
 }
 
 /// Absolute paths against this process's cwd (never the daemon's); each must exist.

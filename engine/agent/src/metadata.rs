@@ -40,9 +40,11 @@ pub fn prepare_paths(paths: &[PathBuf], cwd: &Path) -> Result<Prepared> {
             let (n, bytes) = walk(&abs)?;
             file_count += n;
             total_size += bytes;
-        } else {
+        } else if meta.is_file() {
             file_count += 1;
             total_size += meta.len();
+        } else {
+            bail!("not a regular file or directory: {}", abs.display());
         }
         file_names.push(
             abs.file_name()
@@ -152,6 +154,19 @@ mod tests {
         assert_eq!(p.metadata.file_name, "2 items");
         assert_eq!((p.metadata.item_count, p.metadata.size), (2, 22));
         assert!(p.metadata.thumbnail.is_none() && p.metadata.items.is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn special_file_is_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let sock = dir.path().join("s.sock");
+        let _listener = std::os::unix::net::UnixListener::bind(&sock).unwrap();
+        let err = prepare_paths(std::slice::from_ref(&sock), dir.path()).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            format!("not a regular file or directory: {}", sock.display())
+        );
     }
 
     #[test]

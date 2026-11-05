@@ -73,6 +73,10 @@ pub(crate) struct Inbound {
     /// Per-sender FIFO keyed by lowercase endpoint id. A key exists exactly
     /// while that sender's driver task runs.
     pending: Mutex<HashMap<String, VecDeque<PendingEntry>>>,
+    /// One download at a time per destination folder: the engine's export
+    /// checks for an existing file and then copies, so two concurrent
+    /// downloads into one folder could overwrite each other.
+    folder_locks: Mutex<HashMap<PathBuf, Weak<tokio::sync::Mutex<()>>>>,
 }
 
 impl Inbound {
@@ -81,7 +85,19 @@ impl Inbound {
             auto: Mutex::new(AutoQueue::default()),
             auto_notify: Arc::new(Notify::new()),
             pending: Mutex::new(HashMap::new()),
+            folder_locks: Mutex::new(HashMap::new()),
         }
+    }
+
+    fn folder_lock(&self, dir: &Path) -> Arc<tokio::sync::Mutex<()>> {
+        let mut map = self.folder_locks.lock().unwrap_or_else(|e| e.into_inner());
+        map.retain(|_, l| l.strong_count() > 0);
+        if let Some(lock) = map.get(dir).and_then(Weak::upgrade) {
+            return lock;
+        }
+        let lock = Arc::new(tokio::sync::Mutex::new(()));
+        map.insert(dir.to_path_buf(), Arc::downgrade(&lock));
+        lock
     }
 
     pub(crate) fn auto_notify(&self) -> Arc<Notify> {
@@ -563,8 +579,20 @@ impl AgentService {
     /// terminal update. Shared by paired invites and ticket receives.
     pub(crate) async fn receive_into(&self, rec_id: String, ticket: String, output_dir: PathBuf) {
         // `cancel_transfer` already finalized it.
-        let Some(cancel_rx) = self.cancels.start(&rec_id) else {
+        let Some(mut cancel_rx) = self.cancels.start(&rec_id) else {
             return;
+        };
+        // Queue behind other downloads into the same folder; cancellable meanwhile.
+        let lock = self.inbound.folder_lock(&output_dir);
+        let _guard = tokio::select! {
+            guard = lock.lock_owned() => guard,
+            _ = &mut cancel_rx => {
+                self.cancels.finish(&rec_id);
+                tracing::info!(transfer = %rec_id, "inbound transfer cancelled");
+                self.registry()
+                    .update(&rec_id, |r| r.status = TransferStatus::Cancelled);
+                return;
+            }
         };
         let progress = Arc::new(ReceiveProgress::new(
             self.registry().clone(),
@@ -849,6 +877,22 @@ mod tests {
         // Paired invites follow the approver's own preference.
         assert!(!consult_approver(false, false, false));
         assert!(consult_approver(false, true, true));
+    }
+
+    #[tokio::test]
+    async fn folder_lock_is_shared_per_folder() {
+        let inbound = Inbound::new();
+        let a = inbound.folder_lock(Path::new("/rx/Laptop"));
+        let held = a.clone().lock_owned().await;
+        let same = inbound.folder_lock(Path::new("/rx/Laptop"));
+        assert!(Arc::ptr_eq(&a, &same));
+        assert!(same.try_lock().is_err(), "same folder must wait");
+        let other = inbound.folder_lock(Path::new("/rx/Phone"));
+        assert!(other.try_lock().is_ok(), "other folders proceed");
+        drop((held, a, same, other));
+        // Unused locks are pruned.
+        inbound.folder_lock(Path::new("/rx/New"));
+        assert_eq!(inbound.folder_locks.lock().unwrap().len(), 1);
     }
 
     #[test]

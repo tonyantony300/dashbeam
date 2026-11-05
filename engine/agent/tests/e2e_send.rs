@@ -264,6 +264,31 @@ async fn untrusted_send_expires() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn late_decline_of_expired_invite_is_not_the_next_sends_answer() {
+    // B declines invite 1 on its own expiry ~2 s after A expired it: inside
+    // the lane's grace, before send 2 has been invited.
+    let p = paired(named("Alpha", 3), named("Bravo", 5), false).await;
+    let src = tempfile::tempdir().unwrap();
+    let one = write(src.path(), "one.txt", b"first");
+    let two = write(src.path(), "two.txt", b"second");
+    let cwd = src.path().to_path_buf();
+
+    let first =
+        p.a.send_to_device("Bravo", vec![one], cwd.clone())
+            .await
+            .unwrap();
+    let second = p.a.send_to_device("Bravo", vec![two], cwd).await.unwrap();
+    assert_eq!(second.status, TransferStatus::Queued);
+
+    let done = wait_terminal(&p.a, &first.id, DEADLINE).await;
+    assert_eq!(done.status, TransferStatus::Expired, "{done:?}");
+    let done2 = wait_terminal(&p.a, &second.id, DEADLINE).await;
+    assert_eq!(done2.status, TransferStatus::Expired, "{done2:?}");
+
+    p.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn second_send_to_same_device_queues_and_each_gets_own_outcome() {
     let p = paired(named("Alpha", 600), named("Bravo", 600), false).await;
     let src = tempfile::tempdir().unwrap();

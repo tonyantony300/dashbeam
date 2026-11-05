@@ -202,3 +202,22 @@ fn autostart_during_node_shutdown_window_succeeds() {
     let new_pid = status_json(node.path()).unwrap()["pid"].as_i64().unwrap() as i32;
     assert_ne!(new_pid, old_pid);
 }
+
+#[test]
+fn name_warns_when_config_sets_name() {
+    let node = Node::new();
+    let o = dashbeam(node.path(), &["name", "Plain Box"]);
+    assert!(o.status.success(), "name failed: {}", stderr(&o));
+    assert_eq!(stdout(&o).trim(), "Plain Box");
+    assert!(!stderr(&o).contains("warning"), "{}", stderr(&o));
+
+    std::fs::write(node.path().join("config.toml"), "name = \"Config Box\"\n").unwrap();
+    let o = dashbeam(node.path(), &["name", "Other Box"]);
+    assert!(o.status.success(), "name failed: {}", stderr(&o));
+    assert_eq!(stdout(&o).trim(), "Other Box");
+    assert!(
+        stderr(&o).contains("config.toml sets name = \"Config Box\""),
+        "{}",
+        stderr(&o)
+    );
+}

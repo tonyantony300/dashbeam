@@ -21,6 +21,9 @@ use tokio::time::Instant;
 
 /// How often a waiting send checks `completed_peers()` and progress.
 const POLL: Duration = Duration::from_millis(500);
+/// After an `Expired` send, the device's next send waits this long so a late
+/// answer to the expired invite is dropped instead of taken as its answer.
+const STALE_RESPONSE_GRACE: Duration = Duration::from_secs(5);
 
 struct Job {
     id: String,
@@ -231,12 +234,11 @@ impl AgentService {
         })
     }
 
-    /// One send, start to the single terminal update.
-    async fn run_send(&self, key: &str, job: Job) {
+    /// One send, start to the single terminal update. Returns the final
+    /// status, or `None` if it was cancelled before it started.
+    async fn run_send(&self, key: &str, job: Job) -> Option<TransferStatus> {
         // `cancel_transfer` already finalized it while it was queued.
-        let Some(mut cancel) = self.cancels.start(&job.id) else {
-            return;
-        };
+        let mut cancel = self.cancels.start(&job.id)?;
         if self.registry().get(&job.id).map(|r| r.status) == Some(TransferStatus::Queued) {
             self.registry()
                 .update_live(&job.id, |r| r.status = TransferStatus::Starting);
@@ -253,6 +255,7 @@ impl AgentService {
                 r.bytes_done = r.total_bytes;
             }
         });
+        Some(end.status)
     }
 
     /// Shares, invites, waits; the share is stopped before this returns.
@@ -442,8 +445,17 @@ async fn run_lane(
                 None => return,
             },
         };
-        let Some(svc) = svc.upgrade() else { return };
-        svc.run_send(&key, job).await;
+        let Some(strong) = svc.upgrade() else { return };
+        let status = strong.run_send(&key, job).await;
+        drop(strong);
+        if status == Some(TransferStatus::Expired) {
+            // No response channel is registered meanwhile, so answers are dropped.
+            tokio::select! {
+                biased;
+                _ = stop.wait_for(|s| *s) => return,
+                _ = tokio::time::sleep(STALE_RESPONSE_GRACE) => {}
+            }
+        }
     }
 }
 
