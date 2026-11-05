@@ -55,7 +55,9 @@ async fn ticket_is_one_time() {
     let ticket = shared.ticket.clone().expect("ticket");
     assert!(shared.expires_at_ms.is_some());
 
-    let first = b.receive_ticket(&ticket).await.unwrap();
+    let started = b.receive_ticket(&ticket).await.unwrap();
+    assert_eq!(started.status, TransferStatus::Transferring, "{started:?}");
+    let first = wait_terminal(&b, &started.id).await;
     assert_eq!(first.status, TransferStatus::Received, "{first:?}");
     assert_eq!(first.kind, TransferKind::Ticket);
     assert_eq!(first.saved_paths.len(), 1);
@@ -65,10 +67,13 @@ async fn ticket_is_one_time() {
     let sent = wait_terminal(&a, &shared.id).await;
     assert_eq!(sent.status, TransferStatus::Delivered, "{sent:?}");
 
-    let second = tokio::time::timeout(Duration::from_secs(60), b.receive_ticket(&ticket))
+    let second = b.receive_ticket(&ticket).await.unwrap();
+    let (second, running) = b
+        .registry()
+        .wait_terminal(&second.id, Duration::from_secs(60))
         .await
-        .expect("second receive must fail within 60 s")
         .unwrap();
+    assert!(!running, "second receive must fail within 60 s: {second:?}");
     assert_eq!(second.status, TransferStatus::Failed, "{second:?}");
     assert!(second.error.is_some());
 

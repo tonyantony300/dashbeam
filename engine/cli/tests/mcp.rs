@@ -257,12 +257,14 @@ async fn wait_for_incoming_cursor_advances() {
             .await
             .unwrap();
         let ticket = shared.ticket.expect("ticket");
+        // Returns at once; the outcome comes from the wait tools.
         let rec = fx.ok("receive_ticket", json!({"ticket": ticket})).await;
-        assert_eq!(rec["status"], "received", "{rec}");
+        assert_eq!(rec["status"], "transferring", "{rec}");
         let id = rec["id"].as_str().unwrap().to_string();
+        assert_eq!(rec["transfer_id"], rec["id"], "{rec}");
 
         let batch = fx
-            .ok("wait_for_incoming", json!({"timeout_secs": 10}))
+            .ok("wait_for_incoming", json!({"timeout_secs": 60}))
             .await;
         let ids: Vec<&str> = batch["transfers"]
             .as_array()

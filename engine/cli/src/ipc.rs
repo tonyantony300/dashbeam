@@ -111,7 +111,7 @@ pub enum Request {
         #[serde(default)]
         ttl_secs: Option<u64>,
     },
-    /// -> `TransferRecord`
+    /// -> `TransferRecord`, still `transferring`; wait on it for the outcome.
     ReceiveTicket { ticket: String },
     /// -> `TransferRecord`
     GetTransfer { id: String },

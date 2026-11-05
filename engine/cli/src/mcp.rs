@@ -262,7 +262,7 @@ impl DashbeamMcp {
     }
 
     #[tool(
-        description = "Downloads a DashBeam or sendme ticket into the node's receive folder. Files are never opened or executed and never overwrite existing files. Returns the transfer record; saved_paths lists where the files landed."
+        description = "Starts downloading a DashBeam or sendme ticket into the node's receive folder and returns at once with the transfer record (status transferring) and its transfer_id; use wait_for_transfer for the outcome, whose saved_paths lists where the files landed. Files are never opened or executed and never overwrite existing files. If the node sets max_ticket_receive_bytes, a ticket over the limit, or a plain sendme ticket that carries no size, is rejected before downloading."
     )]
     async fn receive_ticket(&self, Parameters(p): Parameters<TicketParams>) -> CallToolResult {
         respond(self.call(Request::ReceiveTicket { ticket: p.ticket }).await)

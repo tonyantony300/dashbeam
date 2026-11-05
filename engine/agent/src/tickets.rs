@@ -185,10 +185,11 @@ impl AgentService {
         });
     }
 
-    /// Downloads `ticket` into `receive_dir/tickets/<transfer id>/` and returns
-    /// the finished record. With `max_ticket_receive_bytes` set, an oversized
-    /// payload is rejected before anything is downloaded.
-    pub async fn receive_ticket(&self, ticket: &str) -> Result<TransferRecord> {
+    /// Starts downloading `ticket` into `receive_dir/tickets/<transfer id>/`
+    /// and returns the `Transferring` record at once; wait on the record for
+    /// the outcome. With `max_ticket_receive_bytes` set, an oversized payload
+    /// is rejected (as an error) before anything is downloaded.
+    pub async fn receive_ticket(self: &Arc<Self>, ticket: &str) -> Result<TransferRecord> {
         if let Some(max) = self.config().max_ticket_receive_bytes {
             let options = self.receive_options(None)?;
             let meta = engine::fetch_metadata(ticket.to_string(), options)
@@ -224,12 +225,10 @@ impl AgentService {
             .receive_dir(self.data_dir())
             .join("tickets")
             .join(&rec.id);
-        self.receive_into(rec.id.clone(), ticket.to_string(), out_dir)
-            .await;
-        // `cancel_transfer` on a not-yet-started record finalizes it itself.
-        self.registry()
-            .get(&rec.id)
-            .context("transfer record was evicted")
+        let svc = self.clone();
+        let (id, ticket) = (rec.id.clone(), ticket.to_string());
+        tokio::spawn(async move { svc.receive_into(id, ticket, out_dir).await });
+        Ok(rec)
     }
 }
 
