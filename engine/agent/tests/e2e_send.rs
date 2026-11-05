@@ -177,6 +177,31 @@ async fn trusted_send_is_delivered() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn cancel_right_after_fast_delivery_reports_delivered() {
+    let p = paired(named("Alpha", 600), named("Bravo", 600), true).await;
+    let src = tempfile::tempdir().unwrap();
+    let file = write(src.path(), "tiny.txt", b"tiny");
+
+    let rec =
+        p.a.send_to_device("bravo", vec![file], src.path().to_path_buf())
+            .await
+            .unwrap();
+    // Cancel the moment the receiver has the file, inside the 500 ms poll.
+    let end = tokio::time::Instant::now() + DEADLINE;
+    while !inbound(&p.b)
+        .iter()
+        .any(|r| r.status == TransferStatus::Received)
+    {
+        assert!(tokio::time::Instant::now() < end, "B never received");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let done = p.a.cancel_transfer(&rec.id).await.unwrap();
+    assert_eq!(done.status, TransferStatus::Delivered, "{done:?}");
+
+    p.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn untrusted_send_declined() {
     let p = paired(named("Alpha", 600), named("Bravo", 600), false).await;
     let src = tempfile::tempdir().unwrap();

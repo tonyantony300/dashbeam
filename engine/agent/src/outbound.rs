@@ -287,6 +287,7 @@ impl AgentService {
         let end = self
             .invite_and_wait(job, &share, &progress, &mut responses, cancel)
             .await;
+        let end = settle(end, share.completed_peers() >= 1);
         self.outbound.set_responses(key, None);
         stop_share(share).await;
         end
@@ -386,6 +387,9 @@ impl AgentService {
                         )
                     };
                 }
+                _ = progress.completed.notified() => {
+                    return End::ok(TransferStatus::Delivered);
+                }
                 _ = tick.tick() => {
                     if share.completed_peers() >= 1 {
                         return End::ok(TransferStatus::Delivered);
@@ -409,6 +413,16 @@ impl AgentService {
                 }
             }
         }
+    }
+}
+
+/// A finished download wins over whatever ended the wait (cancel, shutdown,
+/// expiry, a late decline): the receiver has the files.
+fn settle(end: End, delivered: bool) -> End {
+    if delivered {
+        End::ok(TransferStatus::Delivered)
+    } else {
+        end
     }
 }
 
@@ -539,6 +553,23 @@ mod tests {
         fn assert_send<T: Send>(_: T) {}
         assert_send(svc.send_to_device("x", vec![], PathBuf::new()));
         assert_send(svc.cancel_transfer("x"));
+    }
+
+    #[test]
+    fn completed_download_wins_over_any_exit() {
+        for status in [
+            TransferStatus::Cancelled,
+            TransferStatus::Expired,
+            TransferStatus::Failed,
+            TransferStatus::Declined,
+            TransferStatus::Unreachable,
+        ] {
+            let end = settle(End::err(status, "x"), true);
+            assert_eq!(end.status, TransferStatus::Delivered);
+            assert!(end.error.is_none());
+            let end = settle(End::err(status, "x"), false);
+            assert_eq!((end.status, end.error.as_deref()), (status, Some("x")));
+        }
     }
 
     #[test]
