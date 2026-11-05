@@ -27,9 +27,9 @@ dashbeam status
 
 Pairing adds a device to your trusted network. Do it yourself; the agent should not.
 
-- **Code:** on one side run `dashbeam pair --host` (prints a code, `--ttl <secs>`, default 300); on the other, run `dashbeam pair --join <code>` or enter the code in the app. The agent can also join a code from the app.
-- **Nearby (same LAN):** `dashbeam nearby` lists devices; `dashbeam pair <device>` sends a request that the other side accepts.
-- **Config:** list the other node's endpoint id (`dashbeam id`) under `pairing.authorized` in `<data dir>/config.toml`. At startup the node pairs with it without a code, retrying with backoff; `trust = true` also trusts it once newly paired.
+- **Code:** on one side run `dashbeam pair --host` (prints a code, `--ttl <secs>`, default 300); on the other, run `dashbeam pair --join <code>` or enter the code in the app. To pair with the desktop or Android app the other way round, show a code in the app and run `dashbeam pair --join <code>`. Ctrl-C on `pair --host` stops waiting, but the node keeps the pairing host open until the TTL runs out.
+- **Nearby (same LAN):** `dashbeam nearby` lists devices; `dashbeam pair <device>` sends a request that the other side accepts. An incoming pair request is accepted only if the `up` terminal is interactive and you answer `y`, or the requester is in `pairing.authorized`.
+- **Config:** list the other node's endpoint id (`dashbeam id`) under `pairing.authorized` in `<data dir>/config.toml`. At startup the node pairs with it without a code, retrying with backoff; `trust = true` also trusts it once newly paired. A listed peer may also pair with this node by code or Nearby request without an open pairing host. The node reads the list only at startup: after editing it, run `dashbeam stop` (the next command starts the node again).
 
 Then `dashbeam devices`, `dashbeam trust <device>` (auto-accept its files), `dashbeam untrust <device>`, `dashbeam forget <device>` (unpair).
 
@@ -39,11 +39,11 @@ All keys are optional; unknown keys are rejected. Defaults shown.
 
 ```toml
 name = "Build Box"                 # default: "<default device name> Agent"
-receive_dir = "/home/me/inbox"     # default: <data dir>/received
+receive_dir = "/home/me/inbox"     # default: <data dir>/received; a relative path is relative to the data dir
 discoverability = "paired_only"    # "everyone" | "paired_only" | "off"
 invite_timeout_secs = 600          # how long an untrusted invite waits for accept/decline
 ticket_ttl_secs = 3600             # lifetime of share tickets
-# max_ticket_receive_bytes = 1073741824   # unset = no limit
+# max_ticket_receive_bytes = 1073741824   # unset = no limit; see Limits
 # relay = ...                      # same relay / discovery settings as the app
 # discovery = ...
 
@@ -71,7 +71,9 @@ Limits:
 
 - One outstanding invite per device; further sends to the same device queue behind it.
 - Tickets are one-time on a best-effort basis: a second peer already mid-download may also finish.
-- `receive_ticket` (MCP) blocks until the download finishes.
+- `dashbeam receive` and `receive_ticket` return as soon as the download starts. Use `--wait` or `wait_for_transfer` for the outcome.
+- After a send to a device ends `expired`, a late answer to that invite may be attributed to the next send to the same device. The node waits 5 s before starting that next send to make this unlikely.
+- `max_ticket_receive_bytes` checks the size the sender's metadata reports, before downloading. That size is not verified, and a plain `sendme` ticket carries no metadata, so with the limit set such tickets are rejected.
 
 ## MCP for AI agents
 
@@ -93,9 +95,14 @@ Generic client config:
 
 Tools (14): `get_identity`, `list_devices`, `list_nearby`, `send_to_device`, `share_ticket`, `receive_ticket`, `transfer_status`, `wait_for_transfer`, `cancel_transfer`, `list_transfers`, `wait_for_incoming`, `list_incoming`, `accept_incoming`, `decline_incoming`.
 
-Transfer results use `id` for the transfer id (pass it as `transfer_id` to the other tools) and `expires_at_ms` for ticket expiry. `wait_*` calls default to 60 s and are capped at 120 s. Relative paths resolve against the MCP process's working directory.
+Transfer results carry `transfer_id` (pass it to the other tools; `id` holds the same value) and, for tickets and invites, `expires_at` (RFC 3339 UTC; `expires_at_ms` is the same instant in unix milliseconds). `wait_*` calls default to 60 s and are capped at 120 s. Relative paths resolve against the MCP process's working directory.
 
-Two more tools, `pair_with_device` and `trust_device`, exist only if the node was started with `dashbeam up --dangerously-allow-agent-pairing`. That flag is never a config key. Without it, the MCP server cannot pair, trust, or forget anything.
+`dashbeam up --dangerously-allow-agent-pairing` lets agents grow your network. With it:
+
+- two more tools exist: `pair_with_device` (sends a pair request to a nearby device) and `trust_device` (trust or untrust a paired device);
+- invites from unpaired nearby devices wait in `list_incoming`, and `accept_incoming` accepts them, which pairs that device.
+
+Nothing is accepted automatically, even with the flag: incoming pair requests still need `pairing.authorized` or a `y` at an interactive `up` terminal. The flag is never a config key. Without it, the MCP server cannot pair, trust, or forget anything.
 
 ## Trust model
 
@@ -106,7 +113,7 @@ Two more tools, `pair_with_device` and `trust_device`, exist only if the node wa
 
 ### Recommended Claude Code deny rule
 
-Add this to your Claude Code settings so the agent cannot grant itself access through the shell, which bypasses the MCP restrictions:
+Add this to your Claude Code settings so the agent cannot easily grant itself access through the shell, which bypasses the MCP restrictions:
 
 ```json
 {
@@ -116,8 +123,14 @@ Add this to your Claude Code settings so the agent cannot grant itself access th
       "Bash(dashbeam trust:*)",
       "Bash(dashbeam untrust:*)",
       "Bash(dashbeam forget:*)",
-      "Bash(dashbeam up --dangerously-allow-agent-pairing:*)"
+      "Bash(dashbeam up --dangerously-allow-agent-pairing:*)",
+      "Bash(dashbeam --json pair:*)",
+      "Bash(dashbeam --json trust:*)",
+      "Bash(dashbeam --json untrust:*)",
+      "Bash(dashbeam --json forget:*)"
     ]
   }
 }
 ```
+
+These rules match command prefixes, so they are defense in depth, not a boundary. Other global flags placed before the subcommand (for example `dashbeam --data-dir D trust …`) get past them, and so does editing `<data dir>/config.toml` to add a `pairing.authorized` entry (also deny edits to that file). An agent with an unrestricted shell can do whatever your user can.
