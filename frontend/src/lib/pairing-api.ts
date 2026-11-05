@@ -296,6 +296,8 @@ export function formatDeviceTypeLabel(
 			return 'Phone'
 		case 'tablet':
 			return 'Tablet'
+		case 'agent':
+			return 'Agent'
 		default:
 			return deviceType?.trim() || 'Device'
 	}
