@@ -7,7 +7,8 @@ use std::time::Duration;
 
 use anyhow::Context;
 use iroh::endpoint::{
-    presets, AfterHandshakeOutcome, Connection, Endpoint, EndpointHooks, RelayMode, Side,
+    presets, AfterHandshakeOutcome, Connection, Endpoint, EndpointHooks, RecvStream, RelayMode,
+    SendStream, Side,
 };
 use iroh::protocol::{AcceptError, ProtocolHandler, Router};
 use iroh::address_lookup::pkarr::{PkarrPublisher, PkarrResolver};
@@ -164,10 +165,7 @@ impl std::fmt::Debug for ControlProtocol {
 impl ControlProtocol {
     async fn handle_connection(&self, conn: Connection) -> anyhow::Result<()> {
         let remote = conn.remote_id();
-        let (mut pairing_host_open, authorized) = {
-            let access = self.ctx.access.read().await;
-            (access.pairing_host_open, access.authorized.contains(&remote))
-        };
+        let pairing_host_open = self.ctx.access.read().await.pairing_host_open;
         let allowed = self.is_allowed(&remote).await;
 
         if allowed {
@@ -175,18 +173,16 @@ impl ControlProtocol {
             return self.handle_control_session(conn, true).await;
         }
 
-        // Authorized peers get the pairing-host session without an open host.
-        pairing_host_open |= authorized;
-
         if !pairing_host_open {
-            // Accepted only because we're discoverable: serve the reduced
-            // unpaired message set (identity probes, unpaired invites).
+            // Accepted only because we're discoverable (or the peer is
+            // authorized): serve the reduced unpaired message set (identity
+            // probes, unpaired invites, an authorized peer's join).
             return self.handle_control_session(conn, false).await;
         }
 
         let keying = export_connection_keying_material(&conn).context("export keying material")?;
 
-        let (mut send, mut recv) = match conn.accept_bi().await {
+        let (send, recv) = match conn.accept_bi().await {
             Ok(streams) => {
 
                 streams
@@ -195,6 +191,24 @@ impl ControlProtocol {
                 return Err(err).context("accept bi stream for control session");
             }
         };
+
+        self.handle_pairing_session(conn, keying, send, recv, None).await
+    }
+
+    /// Host side of the pairing handshake on one bi stream. `first` is a
+    /// message already read from `recv`: an authorized peer's `PairingInfo`,
+    /// routed here from the unpaired session when no pairing host is open.
+    async fn handle_pairing_session(
+        &self,
+        conn: Connection,
+        keying: Vec<u8>,
+        mut send: SendStream,
+        mut recv: RecvStream,
+        mut first: Option<ControlMessage>,
+    ) -> anyhow::Result<()> {
+        let remote = conn.remote_id();
+        // An authorized join must not close a host the user opened.
+        let via_authorized = first.is_some();
 
         let our_info = ControlMessage::PairingInfo {
             endpoint_id: self.ctx.identity.endpoint_id(),
@@ -214,7 +228,11 @@ impl ControlProtocol {
         let session_id = uuid::Uuid::new_v4().to_string();
 
         loop {
-            let msg = match read_message(&mut recv).await {
+            let read = match first.take() {
+                Some(m) => Ok(m),
+                None => read_message(&mut recv).await,
+            };
+            let msg = match read {
                 Ok(m) => m,
                 Err(_err) => {
                     break;
@@ -401,7 +419,7 @@ impl ControlProtocol {
                 .ctx
                 .pairing_host_persistent
                 .load(Ordering::SeqCst);
-            if !persistent {
+            if !persistent && !via_authorized {
                 self.ctx.access.write().await.pairing_host_open = false;
 
             }
@@ -467,6 +485,17 @@ impl ControlProtocol {
                     continue;
                 }
             };
+
+            // An authorized peer joining by code while no pairing host is
+            // open: hand this stream to the pairing handshake.
+            if !peer_is_paired
+                && matches!(msg, ControlMessage::PairingInfo { .. })
+                && self.is_authorized(&remote).await
+            {
+                return self
+                    .handle_pairing_session(conn, keying, send, recv, Some(msg))
+                    .await;
+            }
 
             // Re-read the allowlist before refusing: nearby pairing commits on
             // a sibling connection, so this session can be accepted before the
@@ -757,6 +786,10 @@ impl ControlProtocol {
 
     async fn is_allowed(&self, remote: &EndpointId) -> bool {
         self.ctx.access.read().await.allowed.contains(remote)
+    }
+
+    async fn is_authorized(&self, remote: &EndpointId) -> bool {
+        self.ctx.access.read().await.authorized.contains(remote)
     }
 
     async fn allow_peer(&self, remote: EndpointId) {
@@ -1199,8 +1232,6 @@ impl NodeService {
         Ok(())
     }
 
-    /// Immediate pairing code from local identity. Never waits on presence or
-    /// relay probes — optional custom-relay hint is best-effort via try_lock.
     /// Replace the set of peers allowed to pair without an open pairing host.
     /// Rejects the whole update if any id is invalid.
     pub async fn set_authorized_peers(&self, ids: Vec<String>) -> anyhow::Result<()> {
@@ -1212,6 +1243,8 @@ impl NodeService {
         Ok(())
     }
 
+    /// Immediate pairing code from local identity. Never waits on presence or
+    /// relay probes — optional custom-relay hint is best-effort via try_lock.
     pub fn pairing_ticket(&self) -> anyhow::Result<String> {
         let relay_url = match self.runtime.try_lock() {
             Ok(runtime) => {

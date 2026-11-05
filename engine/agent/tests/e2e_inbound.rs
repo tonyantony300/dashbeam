@@ -372,3 +372,77 @@ async fn nearby_invite_declined_without_approval() {
     agent.shutdown().await.unwrap();
     sender.node.shutdown().await.unwrap();
 }
+
+fn knows(paired: &[engine::PairedDeviceInfo], id: &str) -> bool {
+    paired.iter().any(|d| d.endpoint_id == id)
+}
+
+fn everyone(config: AgentConfig) -> AgentConfig {
+    AgentConfig {
+        discoverability: DiscoverabilitySetting::Everyone,
+        ..config
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn preapproved_nearby_pair_request_is_accepted() {
+    let sender = spawn_sender("Neighbor", Discoverability::Everyone).await;
+    let agent_dir = tempfile::tempdir().unwrap();
+    // paired_only: only the authorized entry lets the requester in at all.
+    let agent = start_agent(agent_dir.path(), authorizing(&sender)).await;
+    let agent_id = agent.identity().endpoint_id;
+
+    sender.node.inject_nearby_device_for_tests(&agent_id).await;
+    let delivered = sender
+        .node
+        .request_nearby_pair(&agent_id)
+        .await
+        .expect("pair request");
+    assert!(delivered);
+
+    let id = sender.id();
+    wait_for("both sides to pair", || {
+        knows(&agent.list_devices().unwrap(), &id)
+            && knows(&sender.node.list_paired().unwrap(), &agent_id)
+    })
+    .await;
+    assert!(!declined(&sender));
+
+    agent.shutdown().await.unwrap();
+    sender.node.shutdown().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn preapproved_nearby_invite_is_received() {
+    let sender = spawn_sender("Neighbor", Discoverability::Everyone).await;
+    let agent_dir = tempfile::tempdir().unwrap();
+    let agent = start_agent(agent_dir.path(), everyone(authorizing(&sender))).await;
+    let agent_id = agent.identity().endpoint_id;
+
+    sender.node.inject_nearby_device_for_tests(&agent_id).await;
+    let src = tempfile::tempdir().unwrap();
+    let shared = share(src.path(), "hi.txt", b"hi there").await;
+    let delivered = sender
+        .node
+        .invite_nearby_device(&agent_id, &shared.ticket, 1, 8)
+        .await
+        .expect("nearby invite");
+    assert!(delivered);
+
+    let rec = wait_single_inbound(&agent).await;
+    assert_eq!(rec.status, TransferStatus::Received, "{rec:?}");
+    let expected = receive_dir(&agent).join("Neighbor").join("hi.txt");
+    assert_eq!(std::fs::read(&expected).unwrap(), b"hi there");
+    assert_eq!(rec.saved_paths, vec![expected]);
+    let id = sender.id();
+    assert!(knows(&agent.list_devices().unwrap(), &id));
+    wait_for("the sender to record the pairing", || {
+        knows(&sender.node.list_paired().unwrap(), &agent_id)
+    })
+    .await;
+    assert!(agent.list_incoming().is_empty());
+
+    drop(shared);
+    agent.shutdown().await.unwrap();
+    sender.node.shutdown().await.unwrap();
+}
