@@ -57,13 +57,13 @@ pub struct TicketParams {
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct TransferParams {
-    /// The transfer_id (`id`) from a transfer record.
+    /// The transfer_id from a transfer record.
     pub transfer_id: String,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct WaitTransferParams {
-    /// The transfer_id (`id`) from a transfer record.
+    /// The transfer_id from a transfer record.
     pub transfer_id: String,
     /// Seconds to wait (default 60, max 120).
     #[serde(default)]
@@ -226,7 +226,7 @@ impl DashbeamMcp {
     }
 
     #[tool(
-        description = "Sends to one of your paired devices. Trusted devices receive automatically; others must accept. Returns immediately; use wait_for_transfer for the outcome. 'expired' can also mean a busy receiver did not get to it in time. Paths are absolute or relative to this server's working directory. Returns the transfer record (its id is the transfer_id)."
+        description = "Sends to one of your paired devices. Trusted devices receive automatically; others must accept. Returns immediately; use wait_for_transfer for the outcome. 'expired' can also mean a busy receiver did not get to it in time. Paths are absolute or relative to this server's working directory. Returns the transfer record with its transfer_id."
     )]
     async fn send_to_device(&self, Parameters(p): Parameters<SendParams>) -> CallToolResult {
         respond(
@@ -244,7 +244,7 @@ impl DashbeamMcp {
     }
 
     #[tool(
-        description = "Shares files behind a one-time ticket that can be handed to anyone, including people and agents outside the paired network. Anyone holding this ticket can download the files once, until it expires. Paths are absolute or relative to this server's working directory. Returns the transfer record with ticket and expires_at_ms; use wait_for_transfer to learn when it was downloaded."
+        description = "Shares files behind a one-time ticket that can be handed to anyone, including people and agents outside the paired network. Anyone holding this ticket can download the files once, until it expires. Paths are absolute or relative to this server's working directory. Returns the transfer record with transfer_id, ticket and expires_at (RFC 3339 UTC; expires_at_ms is the same instant in unix ms); use wait_for_transfer to learn when it was downloaded."
     )]
     async fn share_ticket(&self, Parameters(p): Parameters<ShareParams>) -> CallToolResult {
         respond(

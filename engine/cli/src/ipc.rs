@@ -104,7 +104,7 @@ pub enum Request {
         paths: Vec<PathBuf>,
         cwd: PathBuf,
     },
-    /// -> `TransferRecord` (with `ticket` and `expires_at_ms`)
+    /// -> `TransferRecord` (with `ticket` and `expires_at`)
     ShareTicket {
         paths: Vec<PathBuf>,
         cwd: PathBuf,

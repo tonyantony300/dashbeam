@@ -20,6 +20,7 @@ async-trait = "0.1"
 tracing = "0.1"
 dirs = "6"
 uuid = { version = "1", features = ["v4"] }
+chrono = { version = "0.4.42", default-features = false, features = ["alloc"] }
 
 [dev-dependencies]
 tempfile = "3"

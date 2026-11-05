@@ -1,6 +1,6 @@
 //! In-memory record of every transfer the agent node makes.
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, Serializer};
 use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -57,7 +57,10 @@ pub struct Peer {
     pub endpoint_id: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Serialized with two derived fields for the MCP contract: `transfer_id`
+/// (same as `id`) and `expires_at` (RFC 3339 UTC form of `expires_at_ms`).
+/// Deserializing ignores them.
+#[derive(Debug, Clone, Deserialize)]
 pub struct TransferRecord {
     pub id: String,
     pub seq: u64,
@@ -74,6 +77,57 @@ pub struct TransferRecord {
     pub saved_paths: Vec<PathBuf>,
     pub ticket: Option<String>,
     pub expires_at_ms: Option<u64>,
+}
+
+impl Serialize for TransferRecord {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        #[derive(Serialize)]
+        struct Wire<'a> {
+            id: &'a str,
+            transfer_id: &'a str,
+            seq: u64,
+            direction: Direction,
+            kind: TransferKind,
+            peer: &'a Option<Peer>,
+            file_names: &'a [String],
+            total_bytes: u64,
+            bytes_done: u64,
+            status: TransferStatus,
+            created_at_ms: u64,
+            updated_at_ms: u64,
+            error: &'a Option<String>,
+            saved_paths: &'a [PathBuf],
+            ticket: &'a Option<String>,
+            expires_at_ms: Option<u64>,
+            expires_at: Option<String>,
+        }
+        Wire {
+            id: &self.id,
+            transfer_id: &self.id,
+            seq: self.seq,
+            direction: self.direction,
+            kind: self.kind,
+            peer: &self.peer,
+            file_names: &self.file_names,
+            total_bytes: self.total_bytes,
+            bytes_done: self.bytes_done,
+            status: self.status,
+            created_at_ms: self.created_at_ms,
+            updated_at_ms: self.updated_at_ms,
+            error: &self.error,
+            saved_paths: &self.saved_paths,
+            ticket: &self.ticket,
+            expires_at_ms: self.expires_at_ms,
+            expires_at: self.expires_at_ms.and_then(rfc3339_utc),
+        }
+        .serialize(serializer)
+    }
+}
+
+/// Unix milliseconds as RFC 3339 UTC, e.g. `2026-11-05T10:30:00.000Z`.
+fn rfc3339_utc(ms: u64) -> Option<String> {
+    let dt = chrono::DateTime::from_timestamp_millis(i64::try_from(ms).ok()?)?;
+    Some(dt.to_rfc3339_opts(chrono::SecondsFormat::Millis, true))
 }
 
 struct State {
@@ -260,6 +314,27 @@ mod tests {
             ticket: None,
             expires_at_ms: None,
         }
+    }
+
+    #[test]
+    fn serializes_transfer_id_and_expires_at_and_round_trips() {
+        let mut r = rec(Direction::Outbound, TransferStatus::WaitingForDownload);
+        r.id = "abc".into();
+        r.expires_at_ms = Some(1_794_000_000_123);
+        let v = serde_json::to_value(&r).unwrap();
+        assert_eq!(v["id"], "abc");
+        assert_eq!(v["transfer_id"], "abc");
+        assert_eq!(v["expires_at_ms"], 1_794_000_000_123u64);
+        assert_eq!(v["expires_at"], "2026-11-06T21:20:00.123Z");
+        assert_eq!(v["status"], "waiting_for_download");
+
+        let back: TransferRecord = serde_json::from_value(v).unwrap();
+        assert_eq!(back.id, "abc");
+        assert_eq!(back.expires_at_ms, Some(1_794_000_000_123));
+
+        r.expires_at_ms = None;
+        let v = serde_json::to_value(&r).unwrap();
+        assert!(v["expires_at"].is_null() && v["expires_at_ms"].is_null());
     }
 
     #[test]
