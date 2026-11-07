@@ -61,8 +61,8 @@ impl Fixture {
 async fn hello_version_mismatch_errors_with_stop_hint() {
     let fx = Fixture::start().await;
     let sock = agent::paths::socket_path(fx.dir.path());
-    let stream = tokio::net::UnixStream::connect(&sock).await.unwrap();
-    let (r, mut w) = stream.into_split();
+    let stream = ipc::transport::connect(&sock).await.unwrap();
+    let (r, mut w) = ipc::transport::split(stream);
     w.write_all(b"{\"hello\":{\"version\":999}}\n")
         .await
         .unwrap();

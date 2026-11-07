@@ -1,6 +1,6 @@
 # dashbeam CLI and MCP server
 
-`dashbeam` is a headless DashBeam node for terminals and AI agents. It pairs with your DashBeam devices and sends or receives files over the same iroh transport as the app. macOS and Linux only.
+`dashbeam` is a headless DashBeam node for terminals and AI agents. It pairs with your DashBeam devices and sends or receives files over the same iroh transport as the app. It runs on macOS, Windows, and Linux, on a desktop or a headless server: no display and no TTY are required. `dashbeam mcp` and every other command auto-start the node in the background. An interactive `dashbeam up` is only for a person answering a pair prompt.
 
 ## Install
 
@@ -14,7 +14,7 @@ The binary is `dashbeam` (Rust 1.91, pinned by `rust-toolchain.toml`).
 
 Each data dir has one long-lived node. Every command and `dashbeam mcp` auto-starts it if it is not running. `dashbeam up` runs it in the foreground (Ctrl-C to stop); `dashbeam status` shows whether it is up and how it started; `dashbeam stop` shuts it down.
 
-- Data dir: `--data-dir`, then `$DASHBEAM_AGENT_DIR`, then `<OS data dir>/dashbeam-agent`. It holds identity, `config.toml`, the control socket (`node.sock`, mode 0600), `node.log` and `received/`.
+- Data dir: `--data-dir`, then `$DASHBEAM_AGENT_DIR`, then `<OS data dir>/dashbeam-agent`. It holds identity, `config.toml`, the control socket (`node.sock`), `node.log` and `received/`. On macOS and Linux `node.sock` is a Unix socket (mode 0600). On Windows it is a marker for a local named pipe that rejects remote clients.
 - The agent has its own identity. It never touches the OS keychain, ignores `IROH_SECRET`, and never uses the desktop app's data dir.
 - Use `--json` on any command for raw JSON.
 

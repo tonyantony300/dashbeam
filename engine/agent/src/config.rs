@@ -139,7 +139,7 @@ relay_url = "https://relay.example"
         assert!(c.pairing.authorized[0].trust);
         assert!(!c.pairing.authorized[1].trust);
         assert_eq!(c.discoverability, DiscoverabilitySetting::Off);
-        assert_eq!(c.receive_dir(d.path()), std::path::PathBuf::from("/tmp/rx"));
+        assert_eq!(c.receive_dir(d.path()), d.path().join("/tmp/rx"));
     }
 
     #[test]

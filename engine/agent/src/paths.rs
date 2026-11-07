@@ -73,6 +73,7 @@ pub fn resolve_data_dir(flag: Option<PathBuf>) -> Result<PathBuf> {
         Some(base) => ensure_not_app_dir(&dir, &base.join(APP_DIR_NAME))?,
         None => dir,
     };
+    #[cfg_attr(not(unix), allow(unused_variables))]
     let existed = dir.is_dir();
     std::fs::create_dir_all(&dir).with_context(|| format!("create {}", dir.display()))?;
     #[cfg(unix)]
