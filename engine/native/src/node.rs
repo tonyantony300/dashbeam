@@ -72,6 +72,7 @@ async fn has_direct_path(conn: &Connection) -> bool {
 struct PairedOnlyHook {
     access: Arc<RwLock<AccessState>>,
     blocked: Arc<RwLock<HashSet<String>>>,
+    pending_nearby_invites: Arc<RwLock<HashMap<String, PendingNearbyInvite>>>,
 }
 
 impl EndpointHooks for PairedOnlyHook {
@@ -102,6 +103,18 @@ impl EndpointHooks for PairedOnlyHook {
         };
         if pairing_host_open || allowed || authorized {
 
+            return AfterHandshakeOutcome::accept();
+        }
+
+        // A peer we sent a nearby invite or pair request to is answering it.
+        // Admitted at any discoverability, else a `PairedOnly` sender (the
+        // agent default) rejects the accept and pairing stays one-sided.
+        if self
+            .pending_nearby_invites
+            .read()
+            .await
+            .contains_key(&remote.to_string())
+        {
             return AfterHandshakeOutcome::accept();
         }
 
@@ -2287,6 +2300,7 @@ async fn build_runtime(
     let hook = PairedOnlyHook {
         access: access.clone(),
         blocked,
+        pending_nearby_invites: pending_nearby_invites.clone(),
     };
 
     // The control endpoint must publish (so paired peers find us) and resolve

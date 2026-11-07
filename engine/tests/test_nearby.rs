@@ -661,6 +661,45 @@ async fn accepting_a_nearby_pair_request_promotes_both_sides() {
     .await;
 }
 
+/// A `PairedOnly` requester (the agent's default) must still let the accept
+/// back in. Regression: the handshake gate admitted unpaired peers only at
+/// `Everyone`, so the ack was rejected and pairing stayed one-sided.
+#[tokio::test]
+async fn paired_only_requester_receives_the_accept() {
+    let alice = common::spawn_node("alice").await;
+    let bob = common::spawn_node("bob").await;
+    alice.set_discoverability(Discoverability::PairedOnly).await;
+    bob.set_discoverability(Discoverability::Everyone).await;
+
+    alice
+        .inject_nearby_device_for_tests(&bob.endpoint_id())
+        .await;
+    assert!(
+        alice
+            .request_nearby_pair(&bob.endpoint_id())
+            .await
+            .expect("pair request should be delivered"),
+        "pair request must report delivered"
+    );
+    common::wait_until(
+        "bob to observe alice's pair request",
+        Duration::from_secs(15),
+        || bob.events.has_event("nearby-pair-request-received"),
+    )
+    .await;
+
+    bob.accept_nearby_invite(&alice.endpoint_id())
+        .await
+        .expect("accept should succeed");
+
+    common::wait_until(
+        "alice to record bob as paired",
+        Duration::from_secs(15),
+        || paired_status(&alice, &bob.endpoint_id()).is_some(),
+    )
+    .await;
+}
+
 /// Accepting a nearby pair request must leave a durable pairing on BOTH sides.
 ///
 /// Regression: refreshing `paired_connections` before delivering the accept
