@@ -101,16 +101,45 @@ fn spawn_background(data_dir: &Path) -> Result<Child> {
         .arg(data_dir)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(log)
-        // Never pin the caller's directory; the daemon gets absolute paths only.
-        .current_dir("/");
+        .stderr(log);
+    // Never pin the caller's directory; the daemon gets absolute paths only.
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
+        cmd.current_dir("/");
         // Own process group: the caller's Ctrl-C or terminal hangup doesn't reach it.
         cmd.process_group(0);
     }
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        // The client was spawned with an inheritable stdout pipe (`Command::output`).
+        // Windows gives that handle to every child, so the daemon would keep the
+        // pipe open and the caller's `output()` would wait forever. Drop the
+        // inherit flag before spawning; Rust marks the daemon's own stdio itself.
+        clear_stdio_inherit();
+        // CREATE_NEW_PROCESS_GROUP: the caller's Ctrl-C doesn't reach the daemon.
+        cmd.creation_flags(0x00000200);
+        cmd.current_dir(data_dir);
+    }
     cmd.spawn().context("spawn dashbeam up --background")
+}
+
+#[cfg(windows)]
+fn clear_stdio_inherit() {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Foundation::{SetHandleInformation, HANDLE_FLAG_INHERIT};
+    unsafe {
+        for handle in [
+            std::io::stdin().as_raw_handle(),
+            std::io::stdout().as_raw_handle(),
+            std::io::stderr().as_raw_handle(),
+        ] {
+            if !handle.is_null() {
+                let _ = SetHandleInformation(handle as _, HANDLE_FLAG_INHERIT, 0);
+            }
+        }
+    }
 }
 
 /// Last few log lines, for a start failure message.

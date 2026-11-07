@@ -34,7 +34,40 @@ fn status_json(dir: &Path) -> Option<serde_json::Value> {
 }
 
 fn alive(pid: i32) -> bool {
-    unsafe { libc::kill(pid, 0) == 0 }
+    if pid <= 0 {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        unsafe { libc::kill(pid, 0) == 0 }
+    }
+    #[cfg(windows)]
+    {
+        let out = Command::new("tasklist")
+            .args(["/FI", &format!("PID eq {pid}"), "/NH", "/FO", "CSV"])
+            .stdin(Stdio::null())
+            .output();
+        match out {
+            Ok(o) => String::from_utf8_lossy(&o.stdout).contains(&format!("\"{pid}\"")),
+            Err(_) => false,
+        }
+    }
+}
+
+fn force_kill(pid: i32) {
+    #[cfg(unix)]
+    unsafe {
+        libc::kill(pid, libc::SIGKILL);
+    }
+    #[cfg(windows)]
+    {
+        let _ = Command::new("taskkill")
+            .args(["/F", "/PID", &pid.to_string()])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
 }
 
 /// Owns a temp data dir and makes sure no daemon outlives the test, even
@@ -62,7 +95,7 @@ impl Drop for Node {
         if let Some(pid) = pid {
             let pid = pid as i32;
             if alive(pid) {
-                unsafe { libc::kill(pid, libc::SIGKILL) };
+                force_kill(pid);
             }
         }
     }
@@ -101,7 +134,7 @@ fn stale_socket_after_kill_recovers() {
     let id = stdout(&o).trim().to_string();
     let pid = status_json(node.path()).unwrap()["pid"].as_i64().unwrap() as i32;
 
-    unsafe { libc::kill(pid, libc::SIGKILL) };
+    force_kill(pid);
     let deadline = Instant::now() + Duration::from_secs(10);
     while alive(pid) && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(50));
@@ -137,7 +170,9 @@ fn send_missing_path_errors_before_contacting_peer() {
     let node = Node::new();
     let o = dashbeam(node.path(), &["send", "somebody", "/nope"]);
     assert!(!o.status.success());
-    assert!(stderr(&o).contains("/nope"), "{}", stderr(&o));
+    let err = stderr(&o);
+    // `/nope` is `C:\nope` on Windows; either form names the missing path.
+    assert!(err.contains("nope"), "{err}");
     // Local validation fails before any node is started.
     assert!(status_json(node.path()).is_none());
 }
@@ -166,9 +201,6 @@ fn relative_share_path_resolves_against_client_cwd() {
 
 #[test]
 fn autostart_during_node_shutdown_window_succeeds() {
-    use std::io::{BufRead, BufReader, Write};
-    use std::os::unix::net::UnixStream;
-
     let node = Node::new();
     let o = dashbeam(node.path(), &["id"]);
     assert!(o.status.success(), "id failed: {}", stderr(&o));
@@ -178,15 +210,22 @@ fn autostart_during_node_shutdown_window_succeeds() {
     let sock = std::path::PathBuf::from(st["data_dir"].as_str().unwrap()).join("node.sock");
 
     // Shutdown removes the socket at once but holds the lock while the node winds down.
-    let mut s = UnixStream::connect(&sock).unwrap();
-    s.write_all(b"{\"hello\":{\"version\":1}}\n{\"op\":\"shutdown\"}\n")
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
         .unwrap();
-    let mut r = BufReader::new(s.try_clone().unwrap());
-    let mut line = String::new();
-    r.read_line(&mut line).unwrap();
-    line.clear();
-    r.read_line(&mut line).unwrap();
-    assert!(line.contains("\"ok\""), "{line}");
+    rt.block_on(async {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+        let stream = dashbeam_cli::ipc::transport::connect(&sock).await.unwrap();
+        let (r, mut w) = dashbeam_cli::ipc::transport::split(stream);
+        w.write_all(b"{\"hello\":{\"version\":1}}\n{\"op\":\"shutdown\"}\n")
+            .await
+            .unwrap();
+        let mut lines = BufReader::new(r).lines();
+        let _hello = lines.next_line().await.unwrap();
+        let reply = lines.next_line().await.unwrap().unwrap();
+        assert!(reply.contains("\"ok\""), "{reply}");
+    });
     assert!(alive(old_pid), "old node should still be shutting down");
 
     let started = Instant::now();

@@ -1,5 +1,7 @@
 //! The node socket: newline-delimited JSON over a local socket in the data
-//! dir (`0600`, same OS user only).
+//! dir, reachable by the same OS user. macOS and Linux use a Unix socket
+//! (`0600`). Windows uses a named pipe that rejects remote clients; `node.sock`
+//! is the marker file for that pipe.
 //!
 //! 1. Client sends `{"hello":{"version":1}}`; the server answers
 //!    `{"ok":NodeInfo}` or, on a version mismatch, `{"error":"…"}` and closes.
@@ -11,7 +13,7 @@
 //! Paths in requests are absolute or relative to the request's `cwd`, which
 //! must be absolute (the caller's working directory, never the daemon's).
 
-mod transport;
+pub mod transport;
 
 use agent::registry::{Direction, TransferRecord};
 use agent::AgentService;

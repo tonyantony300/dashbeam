@@ -2,7 +2,7 @@
 
 The headless DashBeam node that AI agents and terminals drive. This crate (`dashbeam-agent`, lib name `agent`) holds all of the agent's behavior: identity, config, pairing policy, sending, receiving, tickets and the transfer registry. It has no UI, socket or MCP code. Those live in [`engine/cli`](../cli), which wraps one `AgentService` per data dir. For install and usage, read [`engine/cli/README.md`](../cli/README.md); this file explains how the inside fits together.
 
-Native only (macOS and Linux). It never uses the OS keychain or the desktop app's data dir.
+Native on macOS, Windows, and Linux, including headless servers. It never uses the OS keychain or the desktop app's data dir.
 
 ## Where it sits
 
@@ -11,7 +11,8 @@ Native only (macOS and Linux). It never uses the OS keychain or the desktop app'
             │ stdio (MCP)                             │
             ▼                                         ▼
      dashbeam mcp ─────────┐              dashbeam send / pair / inbox …
-                           │  newline-delimited JSON over <data dir>/node.sock (0600)
+                           │  newline-delimited JSON over <data dir>/node.sock
+                           │  (Unix socket 0600, or a local Windows named pipe)
                            ▼
                 ┌──────────────────────────┐
                 │  dashbeam up (daemon)    │  engine/cli: ipc.rs, daemon.rs, commands.rs
