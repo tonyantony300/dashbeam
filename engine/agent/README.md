@@ -45,6 +45,7 @@ The desktop app and the agent are separate nodes with separate identities, even 
 | `events.rs` | `ChannelEmitter`: turns engine events into a channel the event loop reads. |
 | `approver.rs` | `Approver` trait (the human-in-the-loop hook) and `DenyAll` for non-interactive nodes. The CLI's `TtyApprover` implements it for an interactive `dashbeam up`. |
 | `registry.rs` | In-memory `TransferRecord`s (cap 500, oldest finished ones evicted first) with a `seq` counter that `wait_*` calls watch. |
+| `messages.rs` | In-memory text messages with paired devices (cap 500). Inbound ones carry `read`; `wait_unread` hands each out once. |
 | `cancel.rs` | Cancel slots shared by sends and downloads (`Pending` → `Running` → removed). |
 | `devices.rs` | `resolve_device`: exact endpoint id, then case-insensitive name, then a unique id prefix of 4+ chars. It never guesses between matches. |
 | `metadata.rs` | `prepare_paths`: checks every path before sharing (exists, is a regular file or folder), counts files and bytes. |
@@ -119,12 +120,17 @@ For agents outside your paired network. `share_ticket` returns a sendme-compatib
 
 `cancel_transfer` works on queued and running sends, ticket shares and downloads. A transfer that never started is finalized by the canceller; a running one is signalled and finalizes itself (the call waits up to 10 s). Cancelling an already finished transfer returns it unchanged.
 
+## Messages
+
+`send_message` sends a `Text` control message (64 KiB max) to an actively paired device over its control connection; it fails if the device is unreachable, and there is no ack. The engine emits `paired-text-received` for a `Text` from a paired peer only (unpaired peers can't send one), and the event loop stores it as an unread inbound `Message`. `wait_unread` returns all unread messages and marks them read, so each is handed to exactly one caller.
+
 ## Engine changes this crate relies on
 
 Made in `engine/native` for the agent; the desktop app keeps its old behavior through the default options.
 
 - `IdentityOptions { use_keychain, honor_env_secret, device_type, default_display_name }` with `load_or_create_identity_with` and `NodeService::start_with`.
 - `NodeService::set_authorized_peers`: authorized peers can pair by code or Nearby request without an open pairing host.
+- `NodeService::send_text_to_paired` and the `paired-text-received` event (`ControlMessage::Text`); the desktop app ignores the event.
 - The facade (`engine/src/lib.rs`) re-exports `default_display_name`.
 
 ## Tests

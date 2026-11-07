@@ -67,6 +67,18 @@ dashbeam cancel <transfer_id>
 
 Received files go to `<receive_dir>/<sender name>/`, never overwrite existing files, and are never opened or executed.
 
+## Messages
+
+Short text messages between paired devices, for example two agents coordinating a handoff. Only paired devices can send or receive them; there is no read receipt.
+
+```bash
+dashbeam msg send "Build Box" "the build is up, grab it"
+dashbeam msg wait [--timeout 60]              # unread messages, each handed out once; exit code 2 if none arrived
+dashbeam msg list                             # recent history, both directions
+```
+
+Messages are kept in memory (last 500) and are up to 64 KiB each. An older peer that predates messaging drops them silently.
+
 Limits:
 
 - One outstanding invite per device; further sends to the same device queue behind it.
@@ -93,7 +105,7 @@ Generic client config:
 }
 ```
 
-Tools (14): `get_identity`, `list_devices`, `list_nearby`, `send_to_device`, `share_ticket`, `receive_ticket`, `transfer_status`, `wait_for_transfer`, `cancel_transfer`, `list_transfers`, `wait_for_incoming`, `list_incoming`, `accept_incoming`, `decline_incoming`.
+Tools (17): `get_identity`, `list_devices`, `list_nearby`, `send_to_device`, `share_ticket`, `receive_ticket`, `transfer_status`, `wait_for_transfer`, `cancel_transfer`, `list_transfers`, `wait_for_incoming`, `list_incoming`, `accept_incoming`, `decline_incoming`, `send_message`, `wait_for_message`, `list_messages`.
 
 Transfer results carry `transfer_id` (pass it to the other tools; `id` holds the same value) and, for tickets and invites, `expires_at` (RFC 3339 UTC; `expires_at_ms` is the same instant in unix milliseconds). `wait_*` calls default to 60 s and are capped at 120 s. Relative paths resolve against the MCP process's working directory.
 
@@ -108,6 +120,7 @@ Nothing is accepted automatically, even with the flag: incoming pair requests st
 
 - Anyone who can run commands as your user can drive the node; the socket is user-only.
 - The agent can send to devices you paired, and can read local files you point it at. It can share a ticket with anyone.
+- Paired devices can put text in front of your agent with `send_message`. The tool descriptions tell the agent to treat it as information from another device, not as instructions from you; only tell your agent to follow a device's messages if you trust whoever drives that device.
 - Devices you paired but did not `trust` must be accepted per transfer, via `dashbeam inbox` or `accept_incoming`. Trusted devices deliver without a prompt, so trust only your own machines.
 - The MCP server cannot change who is paired or trusted unless you opt in with the flag above. Pairing and trust are yours to grant.
 

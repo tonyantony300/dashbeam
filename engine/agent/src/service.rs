@@ -5,8 +5,9 @@ use crate::cancel::{Cancelled, Cancels};
 use crate::config::AgentConfig;
 use crate::events::{ChannelEmitter, EngineEvent};
 use crate::inbound::{self, Inbound};
+use crate::messages::{Message, Messages};
 use crate::outbound::Outbound;
-use crate::registry::{Registry, TransferRecord, TransferStatus};
+use crate::registry::{Direction, Peer, Registry, TransferRecord, TransferStatus};
 use anyhow::{anyhow, bail, Context, Result};
 use engine::{
     DeviceInfo, Discoverability, IdentityOptions, NearbyDevice, NodeService, PairedDeviceInfo,
@@ -22,6 +23,8 @@ use tokio::task::JoinHandle;
 pub const AGENT_DEVICE_TYPE: &str = "agent";
 /// Transfers kept in the in-memory registry.
 const REGISTRY_CAP: usize = 500;
+/// Text messages kept in memory.
+const MESSAGE_CAP: usize = 500;
 /// How long `cancel_transfer` waits for a running transfer to wind down.
 const CANCEL_WAIT: Duration = Duration::from_secs(10);
 
@@ -42,6 +45,7 @@ pub struct AgentService {
     approver: Arc<dyn Approver>,
     node: Arc<NodeService>,
     registry: Registry,
+    messages: Messages,
     pub(crate) inbound: Inbound,
     pub(crate) outbound: Outbound,
     /// Cancel slots for every cancellable transfer, inbound and outbound.
@@ -126,6 +130,7 @@ impl AgentService {
             approver: opts.approver,
             node,
             registry: Registry::new(REGISTRY_CAP),
+            messages: Messages::new(MESSAGE_CAP),
             inbound: Inbound::new(),
             outbound: Outbound::default(),
             cancels: Cancels::default(),
@@ -176,6 +181,10 @@ impl AgentService {
 
     pub fn registry(&self) -> &Registry {
         &self.registry
+    }
+
+    pub fn messages(&self) -> &Messages {
+        &self.messages
     }
 
     pub fn allow_agent_pairing(&self) -> bool {
@@ -235,6 +244,61 @@ impl AgentService {
         Ok(rec)
     }
 
+    /// Sends a text message to a paired device and records it. Fails when the
+    /// device is unknown, not actively paired, or unreachable.
+    pub async fn send_message(&self, device_query: &str, text: &str) -> Result<Message> {
+        let devices = self.list_devices()?;
+        let device = crate::devices::resolve_device(&devices, device_query)
+            .map_err(|e| crate::outbound::unresolved(e, &devices))?;
+        if !device.pairing_status.is_active() {
+            bail!(
+                "{} ({}) is no longer actively paired; pair again before messaging",
+                device.display_name,
+                device.endpoint_id
+            );
+        }
+        let delivered = self
+            .node
+            .send_text_to_paired(&device.endpoint_id, text)
+            .await?;
+        if !delivered {
+            bail!(
+                "{} ({}) is unreachable; is it online?",
+                device.display_name,
+                device.endpoint_id
+            );
+        }
+        let peer = Peer {
+            name: Some(device.display_name),
+            endpoint_id: Some(device.endpoint_id),
+        };
+        Ok(self
+            .messages
+            .push(Direction::Outbound, peer, None, text.to_string()))
+    }
+
+    fn on_text_received(&self, payload: Option<&str>) {
+        let Some(v) = payload.and_then(|p| serde_json::from_str::<serde_json::Value>(p).ok())
+        else {
+            return;
+        };
+        let (Some(id), Some(body)) = (v["remote_endpoint_id"].as_str(), v["body"].as_str()) else {
+            return;
+        };
+        let name = self.list_devices().ok().and_then(|ds| {
+            ds.into_iter()
+                .find(|d| d.endpoint_id.eq_ignore_ascii_case(id))
+                .map(|d| d.display_name)
+        });
+        let peer = Peer {
+            name,
+            endpoint_id: Some(id.to_string()),
+        };
+        let sender_name = v["sender_name"].as_str().map(str::to_string);
+        self.messages
+            .push(Direction::Inbound, peer, sender_name, body.to_string());
+    }
+
     /// Stops the event loop, then the node. Idempotent.
     pub async fn shutdown(&self) -> Result<()> {
         if self.shut_down.swap(true, Ordering::SeqCst) {
@@ -272,6 +336,7 @@ impl AgentService {
             "paired-invite-received" => self.on_invite_received(payload),
             "nearby-pair-request-received" => self.on_pair_request(payload),
             "paired-invite-response" => self.on_invite_response(payload),
+            "paired-text-received" => self.on_text_received(payload),
             // Progress arrives on per-transfer emitters, not the node's.
             "transfer-progress" | "receive-progress" => {}
             "device-paired" => self.on_device_paired(),

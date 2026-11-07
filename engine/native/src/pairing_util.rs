@@ -50,6 +50,25 @@ pub fn emit_paired_invite_received(
     let _ = handle.emit_event_with_payload("paired-invite-received", &payload.to_string());
 }
 
+/// Emit `paired-text-received` for a `Text` from a paired peer.
+pub fn emit_paired_text_received(
+    app_handle: &AppHandle,
+    remote_endpoint_id: &str,
+    sender_name: &str,
+    body: &str,
+) {
+    let payload = serde_json::json!({
+        "remote_endpoint_id": remote_endpoint_id,
+        "sender_name": sender_name,
+        "body": body,
+    });
+
+    let Some(handle) = app_handle else {
+        return;
+    };
+    let _ = handle.emit_event_with_payload("paired-text-received", &payload.to_string());
+}
+
 /// Emit `device-paired` with the peer's name. The payload is additive —
 /// existing listeners ignore it — and lets the shell name the device in an
 /// OS notification instead of saying "a device".

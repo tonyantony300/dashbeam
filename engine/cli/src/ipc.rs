@@ -66,6 +66,8 @@ pub struct StatusInfo {
     pub online_devices: usize,
     pub active_transfers: usize,
     pub pending_invites: usize,
+    #[serde(default)]
+    pub unread_messages: usize,
 }
 
 /// Reply to [`Request::WaitTransfer`]: the record plus whether it timed out
@@ -155,6 +157,16 @@ pub enum Request {
     AgentPairNearby { device: String },
     /// Gated by `--dangerously-allow-agent-pairing`. -> `PairedDeviceInfo`
     AgentTrust { device: String, trusted: bool },
+    /// -> `Message`; fails when the device is unreachable.
+    SendMessage { device: String, text: String },
+    /// -> `[Message]`, both directions, oldest first. Doesn't mark anything read.
+    ListMessages {
+        #[serde(default)]
+        after_seq: Option<u64>,
+    },
+    /// -> `[Message]`: unread inbound messages, now marked read; waits up to
+    /// `timeout_secs` (capped at [`MAX_WAIT_SECS`]) for at least one.
+    WaitMessages { timeout_secs: u64 },
     /// -> `null`, then the node shuts down.
     Shutdown,
 }
@@ -257,6 +269,7 @@ impl Ctx {
                 .filter(|r| !r.status.is_terminal())
                 .count(),
             pending_invites: self.svc.list_incoming().len(),
+            unread_messages: self.svc.messages().unread_count(),
         })
     }
 
@@ -488,6 +501,15 @@ async fn dispatch(ctx: &Ctx, req: Request) -> Result<Value> {
         Request::AgentPairNearby { device } => Value::Bool(svc.agent_pair_nearby(&device).await?),
         Request::AgentTrust { device, trusted } => {
             serde_json::to_value(svc.agent_trust(&device, trusted).await?)?
+        }
+        Request::SendMessage { device, text } => {
+            serde_json::to_value(svc.send_message(&device, &text).await?)?
+        }
+        Request::ListMessages { after_seq } => {
+            serde_json::to_value(svc.messages().list(after_seq))?
+        }
+        Request::WaitMessages { timeout_secs } => {
+            serde_json::to_value(svc.messages().wait_unread(capped(timeout_secs)).await)?
         }
         Request::Shutdown => Value::Null,
     };

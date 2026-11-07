@@ -416,3 +416,35 @@ async fn cancel_stops_queued_and_running_sends() {
 
     p.shutdown().await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn text_messages_round_trip() {
+    let p = paired(named("Alpha", 600), named("Bravo", 600), false).await;
+
+    let sent = p.a.send_message("Bravo", "run scenario 2").await.unwrap();
+    assert_eq!(sent.direction, Direction::Outbound);
+    assert_eq!(sent.peer.endpoint_id.as_deref(), Some(p.b_id().as_str()));
+
+    let got = p.b.messages().wait_unread(DEADLINE).await;
+    assert_eq!(got.len(), 1, "{got:?}");
+    assert_eq!(got[0].text, "run scenario 2");
+    assert_eq!(got[0].direction, Direction::Inbound);
+    assert_eq!(got[0].peer.endpoint_id.as_deref(), Some(p.a_id().as_str()));
+    assert_eq!(got[0].sender_name.as_deref(), Some("Alpha"));
+    assert!(p
+        .b
+        .messages()
+        .wait_unread(Duration::from_millis(200))
+        .await
+        .is_empty());
+
+    // Reply by endpoint id, the way an agent answers what it just read.
+    p.b.send_message(&p.a_id(), "done: declined").await.unwrap();
+    let back = p.a.messages().wait_unread(DEADLINE).await;
+    assert_eq!(back.len(), 1, "{back:?}");
+    assert_eq!(back[0].text, "done: declined");
+
+    assert!(p.a.send_message("Nobody", "hi").await.is_err());
+    assert!(p.a.send_message("Bravo", "   ").await.is_err());
+    p.shutdown().await;
+}

@@ -59,6 +59,12 @@ pub enum ControlMessage {
         #[serde(default)]
         os: String,
     },
+    /// Free-form text from a paired device (agent-to-agent messaging). Paired
+    /// peers only; older peers fail to parse it and skip the stream.
+    Text {
+        sender_name: String,
+        body: String,
+    },
 }
 
 impl ControlMessage {
@@ -75,6 +81,7 @@ impl ControlMessage {
             Self::WhoAreYou => "who-are-you",
             Self::Identity { .. } => "identity",
             Self::PairRequest { .. } => "pair-request",
+            Self::Text { .. } => "text",
         }
     }
 }
@@ -174,6 +181,9 @@ impl PairingTicket {
     }
 }
 
+/// Largest `Text` body, in bytes. Well under the control frame cap.
+pub const MAX_TEXT_BYTES: usize = 64 * 1024;
+
 pub async fn write_message(
     send: &mut (impl tokio::io::AsyncWrite + Unpin),
     message: &ControlMessage,
@@ -225,6 +235,23 @@ mod nearby_message_tests {
             .unwrap();
         let got = read_message(&mut server).await.unwrap();
         assert!(matches!(got, ControlMessage::WhoAreYou));
+    }
+
+    #[tokio::test]
+    async fn text_round_trips() {
+        let (mut client, mut server) = tokio::io::duplex(4096);
+        let sent = ControlMessage::Text {
+            sender_name: "A agent".to_string(),
+            body: "run scenario 2".to_string(),
+        };
+        write_message(&mut client, &sent).await.unwrap();
+        match read_message(&mut server).await.unwrap() {
+            ControlMessage::Text { sender_name, body } => {
+                assert_eq!(sender_name, "A agent");
+                assert_eq!(body, "run scenario 2");
+            }
+            other => panic!("expected Text, got {other:?}"),
+        }
     }
 
     #[tokio::test]

@@ -506,6 +506,17 @@ impl PairedConnectionManager {
                         return true;
                     }
                 }
+                // This connection is to a paired peer by construction.
+                ControlMessage::Text { sender_name, body } => {
+                    if body.len() <= protocol::MAX_TEXT_BYTES {
+                        crate::pairing_util::emit_paired_text_received(
+                            &self.app_handle,
+                            &remote_id,
+                            &sender_name,
+                            &body,
+                        );
+                    }
+                }
                 _other => {
 
                 }

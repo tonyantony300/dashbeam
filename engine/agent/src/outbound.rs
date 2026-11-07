@@ -470,7 +470,7 @@ pub(crate) async fn stop_share(share: SendResult) {
 }
 
 /// A not-found query lists what is paired, so the caller can pick; never a guess.
-fn unresolved(e: ResolveError, devices: &[PairedDeviceInfo]) -> anyhow::Error {
+pub(crate) fn unresolved(e: ResolveError, devices: &[PairedDeviceInfo]) -> anyhow::Error {
     if let ResolveError::NotFound { .. } = e {
         let mut msg = e.to_string();
         if devices.is_empty() {

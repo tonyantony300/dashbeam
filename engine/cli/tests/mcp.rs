@@ -16,7 +16,7 @@ use rmcp::{RoleClient, ServiceExt};
 use serde_json::{json, Value};
 use tokio::sync::oneshot;
 
-const BASE_TOOLS: [&str; 14] = [
+const BASE_TOOLS: [&str; 17] = [
     "get_identity",
     "list_devices",
     "list_nearby",
@@ -31,6 +31,9 @@ const BASE_TOOLS: [&str; 14] = [
     "list_incoming",
     "accept_incoming",
     "decline_incoming",
+    "send_message",
+    "wait_for_message",
+    "list_messages",
 ];
 const PAIRING_TOOLS: [&str; 2] = ["pair_with_device", "trust_device"];
 
@@ -167,7 +170,7 @@ async fn tool_list_includes_pairing_tools_with_flag() {
     let fx = Fixture::start(true).await;
     let mut want = names(&BASE_TOOLS);
     want.extend(names(&PAIRING_TOOLS));
-    assert_eq!(want.len(), 16);
+    assert_eq!(want.len(), 19);
     assert_eq!(fx.tool_names().await, want);
 
     // Routed to the gated node op: an unknown device is a tool error, not "tool not found".

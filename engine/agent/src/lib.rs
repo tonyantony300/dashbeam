@@ -7,6 +7,7 @@ pub mod devices;
 pub mod events;
 pub mod inbound;
 pub mod lock;
+pub mod messages;
 pub mod metadata;
 mod outbound;
 mod pairing;

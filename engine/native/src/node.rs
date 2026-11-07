@@ -374,8 +374,9 @@ impl ControlProtocol {
                 }
                 ControlMessage::WhoAreYou
                 | ControlMessage::Identity { .. }
-                | ControlMessage::PairRequest { .. } => {
-                    // Discovery / pair-request messages; ignore on pairing-host sessions
+                | ControlMessage::PairRequest { .. }
+                | ControlMessage::Text { .. } => {
+                    // Discovery / pair-request / text messages; ignore on pairing-host sessions
                 }
             }
 
@@ -617,6 +618,18 @@ impl ControlProtocol {
                     total_size,
                     &sender_name,
                 );
+            }
+            // Only reachable from paired peers: `Text` is not in
+            // `unpaired_message_allowed`.
+            ControlMessage::Text { sender_name, body } => {
+                if peer_is_paired && body.len() <= protocol::MAX_TEXT_BYTES {
+                    crate::pairing_util::emit_paired_text_received(
+                        &self.ctx.app_handle,
+                        &remote.to_string(),
+                        &sender_name,
+                        &body,
+                    );
+                }
             }
             ControlMessage::PairRequest {
                 sender_name,
@@ -1277,6 +1290,49 @@ impl NodeService {
         ticket.encode()
     }
 
+    /// Sends a `Text` to a paired device. `Ok(false)` when it can't be reached.
+    /// "Delivered" means written to the peer's control stream; there is no ack,
+    /// so an older peer that can't parse it drops it silently.
+    pub async fn send_text_to_paired(
+        &self,
+        remote_endpoint_id: &str,
+        body: &str,
+    ) -> anyhow::Result<bool> {
+        let remote = EndpointId::from_str(remote_endpoint_id)?;
+        anyhow::ensure!(!body.trim().is_empty(), "message is empty");
+        anyhow::ensure!(
+            body.len() <= protocol::MAX_TEXT_BYTES,
+            "message is {} bytes; the limit is {}",
+            body.len(),
+            protocol::MAX_TEXT_BYTES
+        );
+        if !self.access.read().await.allowed.contains(&remote) {
+            anyhow::bail!("unknown paired device");
+        }
+        debug!(
+            target: "dashbeam::_events::pairing::text_sent",
+            remote = %remote.fmt_short(),
+            bytes = body.len(),
+        );
+        let Some(conn) = self.control_conn(remote_endpoint_id, true).await? else {
+            return Ok(false);
+        };
+        let (mut send, _recv) = conn.open_bi().await.context("open bi stream for text")?;
+        let msg = ControlMessage::Text {
+            sender_name: self.identity.display_name(),
+            body: body.to_string(),
+        };
+        write_message(&mut send, &msg)
+            .await
+            .context("write Text message")?;
+        // A freshly dialed `conn` closes on last-handle drop; hold it briefly.
+        drop(send);
+        tokio::spawn(async move {
+            let _ = tokio::time::timeout(Duration::from_secs(5), conn.closed()).await;
+        });
+        Ok(true)
+    }
+
     pub async fn invite_paired_device(
         &self,
         remote_endpoint_id: &str,
@@ -1401,17 +1457,14 @@ impl NodeService {
         Ok(true)
     }
 
-    /// Delivers a single `Invite` to `remote_endpoint_id`. Shared by the paired
-    /// and nearby invite paths — only their preconditions differ.
-    /// `use_cached_session` is false for a peer we've never talked to.
-    async fn deliver_invite(
+    /// A control connection to `remote_endpoint_id`: the cached presence
+    /// session when `use_cached_session`, else a fresh dial. `None` when the
+    /// peer can't be reached.
+    async fn control_conn(
         &self,
         remote_endpoint_id: &str,
-        blob_ticket: &str,
-        file_count: u32,
-        total_size: u64,
         use_cached_session: bool,
-    ) -> anyhow::Result<bool> {
+    ) -> anyhow::Result<Option<Connection>> {
         let remote = EndpointId::from_str(remote_endpoint_id)?;
         let stored_relay = self
             .paired_store
@@ -1460,13 +1513,33 @@ impl NodeService {
                         conn
                     }
                     Ok(Err(_err)) => {
-                        return Ok(false);
+                        return Ok(None);
                     }
                     Err(_) => {
-                        return Ok(false);
+                        return Ok(None);
                     }
                 }
             }
+        };
+        Ok(Some(conn))
+    }
+
+    /// Delivers a single `Invite` to `remote_endpoint_id`. Shared by the paired
+    /// and nearby invite paths — only their preconditions differ.
+    /// `use_cached_session` is false for a peer we've never talked to.
+    async fn deliver_invite(
+        &self,
+        remote_endpoint_id: &str,
+        blob_ticket: &str,
+        file_count: u32,
+        total_size: u64,
+        use_cached_session: bool,
+    ) -> anyhow::Result<bool> {
+        let Some(conn) = self
+            .control_conn(remote_endpoint_id, use_cached_session)
+            .await?
+        else {
+            return Ok(false);
         };
 
         let (mut send, _recv) = match conn.open_bi().await {

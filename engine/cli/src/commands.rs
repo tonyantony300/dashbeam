@@ -7,6 +7,7 @@ use agent::approver::{Approver, DenyAll};
 use agent::config::AgentConfig;
 use agent::inbound::PendingInvite;
 use agent::lock::NodeLock;
+use agent::messages::Message;
 use agent::registry::{Direction, TransferRecord, TransferStatus};
 use agent::{AgentOptions, AgentService};
 use anyhow::{bail, Context, Result};
@@ -100,6 +101,12 @@ pub enum Cmd {
     },
     /// Cancel a queued or running transfer.
     Cancel { transfer_id: String },
+    /// Text messages with paired devices.
+    #[command(visible_alias = "message")]
+    Msg {
+        #[command(subcommand)]
+        action: MsgAction,
+    },
     /// Serve MCP over stdio for AI agents (auto-starts the node).
     Mcp,
 }
@@ -146,6 +153,25 @@ pub enum InboxAction {
     Accept { invite_id: String },
     /// Decline a pending invite.
     Decline { invite_id: String },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum MsgAction {
+    /// Send a text message to a paired device.
+    Send {
+        device: String,
+        /// The message; several words are joined with spaces.
+        #[arg(required = true, num_args = 1..)]
+        text: Vec<String>,
+    },
+    /// Wait for unread messages and print them (each is handed out once).
+    Wait {
+        /// Seconds to wait (max 120).
+        #[arg(long, value_name = "S", default_value_t = 60)]
+        timeout: u64,
+    },
+    /// List recent messages, sent and received.
+    List,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -250,6 +276,7 @@ pub async fn run(cli: Cli, iroh_secret_was_set: bool) -> Result<i32> {
             emit(json, &list, || print_transfers(&list))
         }
         Cmd::Inbox { action } => inbox(&dir, action, json).await,
+        Cmd::Msg { action } => msg(&dir, action, json).await,
         Cmd::Mcp => {
             // stdout carries the protocol; logs go to stderr.
             init_tracing(true);
@@ -554,6 +581,7 @@ async fn status(dir: &Path, json: bool) -> Result<i32> {
             "  transfers  {} active, {} pending invite(s)",
             st.active_transfers, st.pending_invites
         );
+        println!("  messages   {} unread", st.unread_messages);
         if st.info.agent_pairing_allowed {
             println!("  agent pairing ALLOWED (--dangerously-allow-agent-pairing)");
         }
@@ -700,7 +728,63 @@ async fn inbox(dir: &Path, action: Option<InboxAction>, json: bool) -> Result<i3
     }
 }
 
+async fn msg(dir: &Path, action: MsgAction, json: bool) -> Result<i32> {
+    let mut c = node(dir).await?;
+    match action {
+        MsgAction::Send { device, text } => {
+            let m: Message = c
+                .call(Request::SendMessage {
+                    device,
+                    text: text.join(" "),
+                })
+                .await?;
+            emit(json, &m, || println!("sent to {}", safe(&peer_label(&m))))
+        }
+        MsgAction::Wait { timeout } => {
+            let list: Vec<Message> = c
+                .call(Request::WaitMessages {
+                    timeout_secs: timeout.min(ipc::MAX_WAIT_SECS),
+                })
+                .await?;
+            emit(json, &list, || print_messages(&list))?;
+            // 2 = nothing arrived, so scripts can loop on it.
+            Ok(if list.is_empty() { 2 } else { 0 })
+        }
+        MsgAction::List => {
+            let list: Vec<Message> = c.call(Request::ListMessages { after_seq: None }).await?;
+            emit(json, &list, || print_messages(&list))
+        }
+    }
+}
+
+fn peer_label(m: &Message) -> String {
+    m.peer
+        .name
+        .clone()
+        .or_else(|| m.sender_name.clone())
+        .or_else(|| m.peer.endpoint_id.clone())
+        .unwrap_or_else(|| "-".into())
+}
+
 // ---------------------------------------------------------------- printing
+
+fn print_messages(list: &[Message]) {
+    if list.is_empty() {
+        println!("no messages");
+    }
+    for m in list {
+        let arrow = match m.direction {
+            Direction::Outbound => "->",
+            Direction::Inbound => "<-",
+        };
+        println!(
+            "[{}] {arrow} {}:\n{}\n",
+            m.seq,
+            safe(&peer_label(m)),
+            display_safe_multiline(&m.text)
+        );
+    }
+}
 
 fn print_devices(devices: &[PairedDeviceInfo]) {
     if devices.is_empty() {
