@@ -12,7 +12,7 @@ Native on macOS, Windows, and Linux, including headless servers. It never uses t
             ▼                                         ▼
      dashbeam mcp ─────────┐              dashbeam send / pair / inbox …
                            │  newline-delimited JSON over <data dir>/node.sock
-                           │  (Unix socket 0600, or a local Windows named pipe)
+                           │  (Unix socket 0600, or a user-only Windows named pipe)
                            ▼
                 ┌──────────────────────────┐
                 │  dashbeam up (daemon)    │  engine/cli: ipc.rs, daemon.rs, commands.rs

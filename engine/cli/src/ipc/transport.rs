@@ -1,5 +1,5 @@
-//! Platform transport for the node socket. Unix domain sockets, or a Windows
-//! named pipe addressed by the same `node.sock` path.
+//! Platform transport for the node socket: a Unix domain socket at
+//! `node.sock`, or on Windows a named pipe whose name `node.sock` records.
 
 #[cfg(unix)]
 mod imp {
@@ -81,16 +81,37 @@ pub use imp::*;
 
 #[cfg(windows)]
 mod imp {
+    //! A named pipe with a random name, recorded in the `node.sock` marker
+    //! file. The pipe's DACL admits only the current user, it rejects remote
+    //! clients, and clients refuse a pipe whose owner is not the current user,
+    //! so another local user can neither connect nor squat the name.
+
     use anyhow::{Context, Result};
+    use std::io;
+    use std::os::windows::io::AsRawHandle;
     use std::path::Path;
     use std::pin::Pin;
+    use std::ptr::null_mut;
     use std::task::{Context as TaskContext, Poll};
     use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
     use tokio::net::windows::named_pipe::{
         ClientOptions, NamedPipeClient, NamedPipeServer, ServerOptions,
     };
     use tokio::sync::Mutex;
+    use windows_sys::Win32::Foundation::{CloseHandle, LocalFree, HANDLE};
+    use windows_sys::Win32::Security::Authorization::{
+        ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW,
+        GetSecurityInfo, SDDL_REVISION_1, SE_KERNEL_OBJECT,
+    };
+    use windows_sys::Win32::Security::{
+        EqualSid, GetTokenInformation, TokenUser, OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR,
+        PSID, SECURITY_ATTRIBUTES, TOKEN_QUERY, TOKEN_USER,
+    };
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
+    /// Every node pipe name starts with this. A marker naming anything else
+    /// (e.g. `\\host\pipe\…` on another machine) is ignored.
+    const PIPE_PREFIX: &str = r"\\.\pipe\dashbeam-";
     /// `ERROR_PIPE_BUSY`: the server exists but every instance is taken.
     const ERROR_PIPE_BUSY: i32 = 231;
 
@@ -108,63 +129,43 @@ mod imp {
 
     pub struct Listener {
         name: String,
+        /// NUL-terminated SDDL, reused for every pipe instance.
+        sddl: Vec<u16>,
         slot: Mutex<NamedPipeServer>,
     }
 
-    /// Named-pipe path for `node.sock`. Hashed so the name stays inside the
-    /// 256-character pipe limit and does not depend on `Hash` randomization.
-    pub fn pipe_name(path: &Path) -> String {
-        let mut hash: u64 = 0xcbf29ce484222325;
-        for b in path.as_os_str().as_encoded_bytes() {
-            hash ^= u64::from(*b);
-            hash = hash.wrapping_mul(0x100000001b3);
-        }
-        format!(r"\\.\pipe\dashbeam-{hash:016x}")
-    }
-
-    pub fn check_path(path: &Path) -> Result<()> {
-        let name = pipe_name(path);
-        // `\\.\pipe\` + name must fit in the kernel's 256-char pipe path.
-        if name.len() > 256 {
-            anyhow::bail!(
-                "socket path {} is too long for a named pipe; use a shorter --data-dir",
-                path.display()
-            );
-        }
+    /// Pipe names don't derive from the data dir path, so any path works.
+    pub fn check_path(_path: &Path) -> Result<()> {
         Ok(())
     }
 
-    /// Binds the pipe for `path` and creates that path as a marker file.
-    /// The caller must hold the node lock: an existing file is a stale marker.
-    /// The pipe rejects remote clients. Its DACL is the process default
-    /// (current user, plus local administrators).
+    /// Creates a fresh pipe and records its name in the marker at `path`.
+    /// The caller must hold the node lock: an existing marker is stale.
     pub fn bind(path: &Path) -> Result<Listener> {
-        check_path(path)?;
         match std::fs::remove_file(path) {
             Ok(()) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
             Err(e) => return Err(e).with_context(|| format!("remove {}", path.display())),
         }
-        let name = pipe_name(path);
-        let server = ServerOptions::new()
-            .first_pipe_instance(true)
-            .reject_remote_clients(true)
-            .create(&name)
-            .with_context(|| format!("bind {name}"))?;
-        std::fs::write(path, &name).with_context(|| format!("create {}", path.display()))?;
+        let name = format!("{PIPE_PREFIX}{}", uuid::Uuid::new_v4().simple());
+        let sddl = owner_only_sddl().context("read the current user's SID")?;
+        let server = create(&name, &sddl, true).with_context(|| format!("bind {name}"))?;
+        // Write then rename, so a client never reads a half-written name.
+        let tmp = path.with_extension("sock.tmp");
+        std::fs::write(&tmp, &name).with_context(|| format!("create {}", tmp.display()))?;
+        std::fs::rename(&tmp, path).with_context(|| format!("create {}", path.display()))?;
         Ok(Listener {
             name,
+            sddl,
             slot: Mutex::new(server),
         })
     }
 
     impl Listener {
-        pub async fn accept(&self) -> std::io::Result<Stream> {
+        pub async fn accept(&self) -> io::Result<Stream> {
             let mut slot = self.slot.lock().await;
             slot.connect().await?;
-            let next = ServerOptions::new()
-                .reject_remote_clients(true)
-                .create(&self.name)?;
+            let next = create(&self.name, &self.sddl, false)?;
             let connected = std::mem::replace(&mut *slot, next);
             Ok(Stream {
                 kind: Kind::Server(connected),
@@ -172,49 +173,167 @@ mod imp {
         }
     }
 
-    pub async fn connect(path: &Path) -> std::io::Result<Stream> {
-        if let Err(e) = check_path(path) {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                e.to_string(),
-            ));
-        }
-        if !path.exists() {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                format!("no node socket at {}", path.display()),
-            ));
-        }
-        let name = pipe_name(path);
-        let mut last = None;
-        for _ in 0..50 {
-            match ClientOptions::new().open(&name) {
-                Ok(client) => {
-                    return Ok(Stream {
-                        kind: Kind::Client(client),
-                    });
-                }
-                Err(e) if e.raw_os_error() == Some(ERROR_PIPE_BUSY) => {
-                    last = Some(e);
+    pub async fn connect(path: &Path) -> io::Result<Stream> {
+        let marker = std::fs::read_to_string(path)?;
+        // A garbled marker counts as "no node": the starter replaces it.
+        let name = parse_marker(&marker).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("{} does not name a dashbeam pipe", path.display()),
+            )
+        })?;
+        let mut busy_retries = 50;
+        let client = loop {
+            match ClientOptions::new().open(name) {
+                Ok(client) => break client,
+                Err(e) if e.raw_os_error() == Some(ERROR_PIPE_BUSY) && busy_retries > 0 => {
+                    busy_retries -= 1;
                     tokio::time::sleep(std::time::Duration::from_millis(20)).await;
                 }
                 Err(e) => return Err(e),
             }
-        }
-        Err(last.unwrap_or_else(|| {
-            std::io::Error::new(std::io::ErrorKind::NotFound, "named pipe busy")
-        }))
+        };
+        verify_owner(&client)?;
+        Ok(Stream {
+            kind: Kind::Client(client),
+        })
+    }
+
+    fn parse_marker(marker: &str) -> Option<&str> {
+        let name = marker.trim();
+        let id = name.strip_prefix(PIPE_PREFIX)?;
+        (!id.is_empty() && id.bytes().all(|b| b.is_ascii_alphanumeric())).then_some(name)
     }
 
     pub fn split(s: Stream) -> (ReadHalf, WriteHalf) {
         tokio::io::split(s)
     }
 
-    pub fn is_not_running(e: &std::io::Error) -> bool {
+    pub fn is_not_running(e: &io::Error) -> bool {
         matches!(
             e.kind(),
-            std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused
+            io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused
         )
+    }
+
+    fn create(name: &str, sddl: &[u16], first: bool) -> io::Result<NamedPipeServer> {
+        let mut sd: PSECURITY_DESCRIPTOR = null_mut();
+        // SAFETY: `sddl` is NUL-terminated UTF-16; `sd` is freed below.
+        let ok = unsafe {
+            ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                sddl.as_ptr(),
+                SDDL_REVISION_1,
+                &mut sd,
+                null_mut(),
+            )
+        };
+        if ok == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let mut sa = SECURITY_ATTRIBUTES {
+            nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
+            lpSecurityDescriptor: sd,
+            bInheritHandle: 0,
+        };
+        // SAFETY: `sa` and the descriptor it points to outlive the call.
+        let server = unsafe {
+            ServerOptions::new()
+                .first_pipe_instance(first)
+                .reject_remote_clients(true)
+                .create_with_security_attributes_raw(
+                    name,
+                    (&mut sa as *mut SECURITY_ATTRIBUTES).cast(),
+                )
+        };
+        // SAFETY: `sd` was allocated by the conversion above.
+        unsafe { LocalFree(sd) };
+        server
+    }
+
+    /// The current user's `TOKEN_USER`, in an 8-byte-aligned buffer.
+    struct UserSid(Vec<u64>);
+
+    impl UserSid {
+        fn current() -> io::Result<Self> {
+            let mut token: HANDLE = null_mut();
+            // SAFETY: plain Win32 calls; the token handle is closed below.
+            unsafe {
+                if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) == 0 {
+                    return Err(io::Error::last_os_error());
+                }
+                let mut len = 0u32;
+                GetTokenInformation(token, TokenUser, null_mut(), 0, &mut len);
+                let mut buf = vec![0u64; (len as usize).div_ceil(8)];
+                let ok =
+                    GetTokenInformation(token, TokenUser, buf.as_mut_ptr().cast(), len, &mut len);
+                let err = io::Error::last_os_error();
+                CloseHandle(token);
+                if ok == 0 {
+                    return Err(err);
+                }
+                Ok(Self(buf))
+            }
+        }
+
+        fn psid(&self) -> PSID {
+            // SAFETY: the buffer holds a TOKEN_USER filled by GetTokenInformation.
+            unsafe { (*self.0.as_ptr().cast::<TOKEN_USER>()).User.Sid }
+        }
+    }
+
+    /// `O:<me>D:P(A;;GA;;;<me>)`: owned by and open only to the current user.
+    fn owner_only_sddl() -> io::Result<Vec<u16>> {
+        let me = UserSid::current()?;
+        let mut s: *mut u16 = null_mut();
+        // SAFETY: `s` is a NUL-terminated LocalAlloc'd string, freed below.
+        let sid = unsafe {
+            if ConvertSidToStringSidW(me.psid(), &mut s) == 0 {
+                return Err(io::Error::last_os_error());
+            }
+            let len = (0..).take_while(|&i| *s.add(i) != 0).count();
+            let sid = String::from_utf16_lossy(std::slice::from_raw_parts(s, len));
+            LocalFree(s.cast());
+            sid
+        };
+        Ok(format!("O:{sid}D:P(A;;GA;;;{sid})")
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect())
+    }
+
+    /// Refuses a pipe someone else created under our name: the node makes the
+    /// current user its owner, so any other owner is an impostor.
+    fn verify_owner(client: &NamedPipeClient) -> io::Result<()> {
+        let me = UserSid::current()?;
+        let mut owner: PSID = null_mut();
+        let mut sd: PSECURITY_DESCRIPTOR = null_mut();
+        // SAFETY: `owner` points into `sd`, which is freed after the compare.
+        let same = unsafe {
+            let rc = GetSecurityInfo(
+                client.as_raw_handle() as HANDLE,
+                SE_KERNEL_OBJECT,
+                OWNER_SECURITY_INFORMATION,
+                &mut owner,
+                null_mut(),
+                null_mut(),
+                null_mut(),
+                &mut sd,
+            );
+            if rc != 0 {
+                return Err(io::Error::from_raw_os_error(rc as i32));
+            }
+            let same = EqualSid(owner, me.psid()) != 0;
+            LocalFree(sd);
+            same
+        };
+        if same {
+            Ok(())
+        } else {
+            Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "the node pipe belongs to another user; refusing to connect",
+            ))
+        }
     }
 
     impl AsyncRead for Stream {
@@ -222,7 +341,7 @@ mod imp {
             mut self: Pin<&mut Self>,
             cx: &mut TaskContext<'_>,
             buf: &mut ReadBuf<'_>,
-        ) -> Poll<std::io::Result<()>> {
+        ) -> Poll<io::Result<()>> {
             match &mut self.kind {
                 Kind::Server(s) => Pin::new(s).poll_read(cx, buf),
                 Kind::Client(s) => Pin::new(s).poll_read(cx, buf),
@@ -235,17 +354,14 @@ mod imp {
             mut self: Pin<&mut Self>,
             cx: &mut TaskContext<'_>,
             buf: &[u8],
-        ) -> Poll<std::io::Result<usize>> {
+        ) -> Poll<io::Result<usize>> {
             match &mut self.kind {
                 Kind::Server(s) => Pin::new(s).poll_write(cx, buf),
                 Kind::Client(s) => Pin::new(s).poll_write(cx, buf),
             }
         }
 
-        fn poll_flush(
-            mut self: Pin<&mut Self>,
-            cx: &mut TaskContext<'_>,
-        ) -> Poll<std::io::Result<()>> {
+        fn poll_flush(mut self: Pin<&mut Self>, cx: &mut TaskContext<'_>) -> Poll<io::Result<()>> {
             match &mut self.kind {
                 Kind::Server(s) => Pin::new(s).poll_flush(cx),
                 Kind::Client(s) => Pin::new(s).poll_flush(cx),
@@ -255,11 +371,26 @@ mod imp {
         fn poll_shutdown(
             mut self: Pin<&mut Self>,
             cx: &mut TaskContext<'_>,
-        ) -> Poll<std::io::Result<()>> {
+        ) -> Poll<io::Result<()>> {
             match &mut self.kind {
                 Kind::Server(s) => Pin::new(s).poll_shutdown(cx),
                 Kind::Client(s) => Pin::new(s).poll_shutdown(cx),
             }
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::parse_marker;
+
+        #[test]
+        fn marker_must_name_a_local_dashbeam_pipe() {
+            let ok = r"\\.\pipe\dashbeam-0123abcd";
+            assert_eq!(parse_marker(&format!("{ok}\r\n")), Some(ok));
+            assert_eq!(parse_marker(r"\\.\pipe\dashbeam-"), None);
+            assert_eq!(parse_marker(r"\\host\pipe\dashbeam-0123abcd"), None);
+            assert_eq!(parse_marker(r"\\.\pipe\other-0123abcd"), None);
+            assert_eq!(parse_marker(r"\\.\pipe\dashbeam-..\x"), None);
         }
     }
 }

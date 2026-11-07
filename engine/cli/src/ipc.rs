@@ -1,7 +1,7 @@
 //! The node socket: newline-delimited JSON over a local socket in the data
 //! dir, reachable by the same OS user. macOS and Linux use a Unix socket
-//! (`0600`). Windows uses a named pipe that rejects remote clients; `node.sock`
-//! is the marker file for that pipe.
+//! (`0600`). Windows uses a randomly named pipe, open only to the current user
+//! and to local clients; `node.sock` is a marker file holding its name.
 //!
 //! 1. Client sends `{"hello":{"version":1}}`; the server answers
 //!    `{"ok":NodeInfo}` or, on a version mismatch, `{"error":"…"}` and closes.

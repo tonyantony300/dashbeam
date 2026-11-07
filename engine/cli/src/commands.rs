@@ -452,9 +452,21 @@ async fn shutdown_signal() {
             _ = on(SignalKind::hangup()) => {}
         }
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
     {
-        let _ = tokio::signal::ctrl_c().await;
+        use tokio::signal::windows::{ctrl_break, ctrl_close, ctrl_shutdown};
+        let mut brk = ctrl_break().ok();
+        let mut close = ctrl_close().ok();
+        let mut shut = ctrl_shutdown().ok();
+        // Ctrl-Break, closing the console window, or system shutdown. A branch
+        // whose handler failed to register just never fires.
+        tokio::select! {
+            Ok(()) = tokio::signal::ctrl_c() => {}
+            Some(()) = async { brk.as_mut()?.recv().await } => {}
+            Some(()) = async { close.as_mut()?.recv().await } => {}
+            Some(()) = async { shut.as_mut()?.recv().await } => {}
+            else => std::future::pending::<()>().await,
+        }
     }
 }
 

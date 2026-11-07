@@ -14,7 +14,7 @@ The binary is `dashbeam` (Rust 1.91, pinned by `rust-toolchain.toml`).
 
 Each data dir has one long-lived node. Every command and `dashbeam mcp` auto-starts it if it is not running. `dashbeam up` runs it in the foreground (Ctrl-C to stop); `dashbeam status` shows whether it is up and how it started; `dashbeam stop` shuts it down.
 
-- Data dir: `--data-dir`, then `$DASHBEAM_AGENT_DIR`, then `<OS data dir>/dashbeam-agent`. It holds identity, `config.toml`, the control socket (`node.sock`), `node.log` and `received/`. On macOS and Linux `node.sock` is a Unix socket (mode 0600). On Windows it is a marker for a local named pipe that rejects remote clients.
+- Data dir: `--data-dir`, then `$DASHBEAM_AGENT_DIR`, then `<OS data dir>/dashbeam-agent`. It holds identity, `config.toml`, the control socket (`node.sock`), `node.log` and `received/`. On macOS and Linux `node.sock` is a Unix socket (mode 0600). On Windows it is a marker file naming a local named pipe that only your user can open.
 - The agent has its own identity. It never touches the OS keychain, ignores `IROH_SECRET`, and never uses the desktop app's data dir.
 - Use `--json` on any command for raw JSON.
 

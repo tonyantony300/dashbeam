@@ -161,6 +161,20 @@ async fn socket_is_0600() {
     fx.stop().await;
 }
 
+/// A marker that doesn't name a local dashbeam pipe (garbled, or pointing at
+/// another host) reads as "no node", so the starter replaces it.
+#[cfg(windows)]
+#[tokio::test]
+async fn foreign_pipe_marker_is_not_running() {
+    let dir = tempfile::tempdir().unwrap();
+    let sock = agent::paths::socket_path(dir.path());
+    for marker in ["", "garbage", r"\\evil\pipe\dashbeam-0123abcd"] {
+        std::fs::write(&sock, marker).unwrap();
+        let err = Client::connect(dir.path()).await.err().unwrap();
+        assert!(ipc::is_not_running(&err), "{marker:?}: {err}");
+    }
+}
+
 #[test]
 fn request_wire_shape() {
     let v = serde_json::to_value(Request::SendToDevice {

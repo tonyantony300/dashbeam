@@ -118,8 +118,10 @@ fn spawn_background(data_dir: &Path) -> Result<Child> {
         // pipe open and the caller's `output()` would wait forever. Drop the
         // inherit flag before spawning; Rust marks the daemon's own stdio itself.
         clear_stdio_inherit();
-        // CREATE_NEW_PROCESS_GROUP: the caller's Ctrl-C doesn't reach the daemon.
-        cmd.creation_flags(0x00000200);
+        use windows_sys::Win32::System::Threading::{CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW};
+        // Own hidden console: no window pops up under a GUI MCP host, closing the
+        // caller's terminal doesn't kill the node, and its Ctrl-C doesn't reach it.
+        cmd.creation_flags(CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW);
         cmd.current_dir(data_dir);
     }
     cmd.spawn().context("spawn dashbeam up --background")

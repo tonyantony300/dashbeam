@@ -1,6 +1,7 @@
 name: E2E Tests
 
 on:
+  workflow_dispatch:
   push:
     branches:
       - main
@@ -27,3 +28,21 @@ jobs:
       - name: Run engine E2E tests
         run: cargo test --manifest-path engine/Cargo.toml -- --test-threads=1
         timeout-minutes: 10
+
+  agent-cli:
+    name: Agent CLI/MCP Tests (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: './engine -> target'
+      # Single-threaded: the tests bind real endpoints and spawn node daemons.
+      - name: Run agent and CLI/MCP tests
+        run: cargo test --manifest-path engine/Cargo.toml -p dashbeam-agent -p dashbeam-cli -- --test-threads=1
+        timeout-minutes: 30

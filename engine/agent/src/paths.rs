@@ -20,7 +20,9 @@ fn resolve_lenient(p: &Path) -> Result<PathBuf> {
             }
             Component::Normal(n) => {
                 out.push(n);
-                if let Ok(real) = out.canonicalize() {
+                // dunce: no `\\?\` verbatim prefix on Windows, so joins and
+                // messages use ordinary paths.
+                if let Ok(real) = dunce::canonicalize(&out) {
                     out = real;
                 }
             }
@@ -123,9 +125,9 @@ mod tests {
             Some(v) => std::env::set_var("DASHBEAM_AGENT_DIR", v),
             None => std::env::remove_var("DASHBEAM_AGENT_DIR"),
         }
-        assert_eq!(got, flag_dir.path().canonicalize().unwrap().join("a"));
+        assert_eq!(got, dunce::canonicalize(flag_dir.path()).unwrap().join("a"));
         assert!(got.is_dir());
-        assert_eq!(got_env, env_dir.path().canonicalize().unwrap());
+        assert_eq!(got_env, dunce::canonicalize(env_dir.path()).unwrap());
     }
 
     #[test]
@@ -145,7 +147,7 @@ mod tests {
     #[test]
     fn guard_rejects_dotdot_symlink_and_inside() {
         let t = tempfile::tempdir().unwrap();
-        let root = t.path().canonicalize().unwrap();
+        let root = dunce::canonicalize(t.path()).unwrap();
         let app = root.join("com.dashbeam.desktop");
         std::fs::create_dir(&app).unwrap();
         let other = root.join("other");

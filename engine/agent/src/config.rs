@@ -117,12 +117,15 @@ mod tests {
     #[test]
     fn config_parses_authorized_peers() {
         let d = tempfile::tempdir().unwrap();
+        // An absolute receive_dir on every OS (a TOML literal keeps `\` intact).
+        let rx = tempfile::tempdir().unwrap();
         std::fs::write(
             d.path().join("config.toml"),
-            r#"
+            format!(
+                r#"
 name = "Box"
 discoverability = "off"
-receive_dir = "/tmp/rx"
+receive_dir = '{}'
 
 [[pairing.authorized]]
 endpoint_id = "aaa"
@@ -132,6 +135,8 @@ trust = true
 endpoint_id = "bbb"
 relay_url = "https://relay.example"
 "#,
+                rx.path().display()
+            ),
         )
         .unwrap();
         let c = AgentConfig::load(d.path()).unwrap();
@@ -139,7 +144,7 @@ relay_url = "https://relay.example"
         assert!(c.pairing.authorized[0].trust);
         assert!(!c.pairing.authorized[1].trust);
         assert_eq!(c.discoverability, DiscoverabilitySetting::Off);
-        assert_eq!(c.receive_dir(d.path()), d.path().join("/tmp/rx"));
+        assert_eq!(c.receive_dir(d.path()), rx.path());
     }
 
     #[test]
