@@ -10,8 +10,8 @@ use engine::{
     verify_discovery as engine_verify_discovery, verify_relays as engine_verify_relays,
     AddrInfoOptions, AppHandle, DeviceInfo, Discoverability, EventEmitter, FileMetadata,
     FilePreviewItem, NearbyDevice, NodeService, PairedDevice, PairedDeviceInfo, ReceiveOptions,
-    SendOptions, TransferDirection, TransferHistoryStore, TransferPathType, TransferPeer,
-    TransferRecord, TransferStatus,
+    SendOptions, StagedStores, TransferDirection, TransferHistoryStore, TransferPathType,
+    TransferPeer, TransferRecord, TransferStatus,
 };
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -456,6 +456,7 @@ pub async fn receive_file(
     discovery: Option<DiscoveryConfigArg>,
     state: State<'_, AppStateMutex>,
     history: State<'_, Arc<TransferHistoryStore>>,
+    staged: State<'_, Arc<StagedStores>>,
     app_handle: tauri::AppHandle,
 ) -> Result<String, String> {
     use iroh_blobs::ticket::BlobTicket;
@@ -499,24 +500,44 @@ pub async fn receive_file(
         magic_ipv6_addr: None,
     };
 
-    // If a previous cancel left a partial store for a *different* hash, delete it now.
-    // Same hash → keep it for resume. Different hash → it would never be reused.
-    // Only act when we know the new hash; if the ticket is unparseable, leave the
-    // stale entry intact so the next valid attempt can still clean it up.
-    if let Some(ref new_hash) = incoming_hash {
-        let stale_hash = state.lock().await.last_cancelled_recv_hash.take();
-        if let Some(stale_hash) = stale_hash {
-            if &stale_hash != new_hash {
-                let stale_dir = engine::storage::temp_dir()
-                    .join(format!("{}{stale_hash}", engine::storage::RECV_DIR_PREFIX));
-                if stale_dir.exists() {
-                    if let Err(e) = tokio::fs::remove_dir_all(&stale_dir).await {
-                        tracing::warn!("Failed to remove stale partial recv store: {}", e);
-                    } else {
-                        tracing::info!("Removed stale partial recv store for hash {}", stale_hash);
-                    }
+    // Where this receive stages its partial store: inside the destination
+    // folder on desktop, the temp dir on Android.
+    let store_path = incoming_hash
+        .as_deref()
+        .map(|hash| partial_store_path_for(hash, &output_dir));
+
+    // If a previous cancel left a partial store this receive will not reuse
+    // (a different hash, or the same one bound for another folder), delete it
+    // now. Only act when we know the new hash; if the ticket is unparseable,
+    // leave the stale entry intact so the next valid attempt can still clean it up.
+    if let (Some(new_hash), Some(new_store)) = (incoming_hash.as_deref(), store_path.as_deref()) {
+        let stale = state.lock().await.last_cancelled_recv.take();
+        if let Some((stale_hash, stale_output_dir)) = stale {
+            let mut stale_dirs = vec![partial_store_path_for(&stale_hash, &stale_output_dir)];
+            // The temp dir holds it instead when the destination could not
+            // host a store; a retry of the same hash falls back there again.
+            if stale_hash != new_hash {
+                stale_dirs.push(engine::storage::temp_recv_store_dir(&stale_hash));
+            }
+            for stale_dir in stale_dirs {
+                if stale_dir == new_store || !stale_dir.exists() {
+                    continue;
+                }
+                if let Err(e) = tokio::fs::remove_dir_all(&stale_dir).await {
+                    tracing::warn!("Failed to remove stale partial recv store: {}", e);
+                } else {
+                    tracing::info!("Removed stale partial recv store for hash {}", stale_hash);
+                    let _ = staged.forget(&stale_dir);
                 }
             }
+        }
+    }
+
+    // Recorded before the download writes anything, so a crash still leaves
+    // the launch sweep a pointer to a store outside the temp dir.
+    if let Some(store) = store_path.as_deref() {
+        if let Err(e) = staged.remember(store, &engine::storage::temp_dir()) {
+            tracing::warn!("could not record staged recv store: {e:#}");
         }
     }
 
@@ -539,9 +560,9 @@ pub async fn receive_file(
         TransferContext {
             blob_hash: incoming_hash.clone(),
             save_path: recorded_save_path,
-            resumable_store_path: incoming_hash
+            resumable_store_path: store_path
                 .as_deref()
-                .map(|hash| partial_store_path_for(hash).to_string_lossy().to_string()),
+                .map(|path| path.to_string_lossy().to_string()),
             peer: sender_peer,
             ..Default::default()
         },
@@ -571,19 +592,16 @@ pub async fn receive_file(
         let mut app_state = state.lock().await;
         app_state.current_receive_cancel = None;
         app_state.current_receive_hash = None;
-        match &result {
-            Err(e) if e.to_string() == "cancelled" => {
-                // Record the hash so the next receive can decide whether to delete this partial.
-                app_state.last_cancelled_recv_hash = incoming_hash;
-            }
-            Ok(_) | Err(_) => {
-                // Success deletes the store automatically (armed guard).
-                // Network errors keep the partial for same-session retry — treated the
-                // same as cancel from the user's perspective re: cleanup.
-                if result.is_err() {
-                    app_state.last_cancelled_recv_hash = incoming_hash;
-                }
-            }
+        // Success deletes the store automatically (armed guard). A cancel or
+        // a network error keeps the partial for same-session retry, so record
+        // it for the next receive to decide whether to delete it.
+        if result.is_err() {
+            app_state.last_cancelled_recv = incoming_hash.map(|hash| (hash, output_dir.clone()));
+        }
+    }
+    if result.is_ok() {
+        if let Some(store) = store_path.as_deref() {
+            let _ = staged.forget(store);
         }
     }
 
@@ -2103,7 +2121,9 @@ mod tests {
         let temp = tempfile::TempDir::new().expect("tempdir");
         let gone = partial_store_path(temp.path(), &"a".repeat(64));
 
-        let stats = stat_partial_store(Some(&gone.to_string_lossy()), temp.path());
+        let staged = StagedStores::new(temp.path());
+
+        let stats = stat_partial_store(Some(&gone.to_string_lossy()), temp.path(), &staged);
 
         assert!(!stats.exists, "a store that is gone cannot be freed");
         assert_eq!(stats.size_bytes, 0);
@@ -2115,7 +2135,9 @@ mod tests {
         let empty = partial_store_path(temp.path(), &"b".repeat(64));
         fs::create_dir_all(&empty).expect("mkdir");
 
-        let stats = stat_partial_store(Some(&empty.to_string_lossy()), temp.path());
+        let staged = StagedStores::new(temp.path());
+
+        let stats = stat_partial_store(Some(&empty.to_string_lossy()), temp.path(), &staged);
 
         assert!(!stats.exists, "0 bytes is never worth offering to free");
     }
@@ -2127,7 +2149,9 @@ mod tests {
         fs::create_dir_all(store.join("data")).expect("mkdir");
         fs::write(store.join("data").join("blob"), b"1234").expect("write");
 
-        let stats = stat_partial_store(Some(&store.to_string_lossy()), temp.path());
+        let staged = StagedStores::new(temp.path());
+
+        let stats = stat_partial_store(Some(&store.to_string_lossy()), temp.path(), &staged);
 
         assert!(stats.exists);
         assert_eq!(stats.size_bytes, 4);
@@ -2286,10 +2310,11 @@ pub async fn list_transfer_history(
 pub async fn delete_transfer_record(
     id: String,
     history: State<'_, Arc<TransferHistoryStore>>,
+    staged: State<'_, Arc<StagedStores>>,
 ) -> Result<(), String> {
     let removed = history.delete(&id).map_err(|e| e.to_string())?;
     if let Some(record) = removed {
-        engine::reclaim_partial(&record, &engine::storage::temp_dir());
+        engine::reclaim_partial(&record, &engine::storage::temp_dir(), &staged);
     }
     Ok(())
 }
@@ -2373,11 +2398,12 @@ pub async fn transfer_open_target(
 #[tauri::command]
 pub async fn clear_transfer_history(
     history: State<'_, Arc<TransferHistoryStore>>,
+    staged: State<'_, Arc<StagedStores>>,
 ) -> Result<(), String> {
     let removed = history.clear().map_err(|e| e.to_string())?;
     let temp_dir = engine::storage::temp_dir();
     for record in &removed {
-        engine::reclaim_partial(record, &temp_dir);
+        engine::reclaim_partial(record, &temp_dir, &staged);
     }
     Ok(())
 }
@@ -2385,7 +2411,11 @@ pub async fn clear_transfer_history(
 /// Walks the record's partial store rather than trusting the record: the
 /// directory can be removed by the OS, by the launch sweep, or by hand. Only a
 /// store still on disk with bytes in it is worth offering to free.
-fn stat_partial_store(raw_path: Option<&str>, temp_dir: &Path) -> TransferTempData {
+fn stat_partial_store(
+    raw_path: Option<&str>,
+    temp_dir: &Path,
+    staged: &StagedStores,
+) -> TransferTempData {
     let nothing = TransferTempData {
         exists: false,
         size_bytes: 0,
@@ -2393,7 +2423,7 @@ fn stat_partial_store(raw_path: Option<&str>, temp_dir: &Path) -> TransferTempDa
     let Some(path) = raw_path.map(PathBuf::from) else {
         return nothing;
     };
-    if !path.is_dir() || !engine::is_reclaimable_partial(&path, temp_dir) {
+    if !path.is_dir() || !engine::is_reclaimable_partial(&path, temp_dir, staged) {
         return nothing;
     }
     let size_bytes = get_total_size(&path).unwrap_or(0);
@@ -2408,6 +2438,7 @@ fn stat_partial_store(raw_path: Option<&str>, temp_dir: &Path) -> TransferTempDa
 pub async fn get_transfer_temp_data(
     id: String,
     history: State<'_, Arc<TransferHistoryStore>>,
+    staged: State<'_, Arc<StagedStores>>,
 ) -> Result<TransferTempData, String> {
     let raw_path = history
         .list()
@@ -2416,8 +2447,9 @@ pub async fn get_transfer_temp_data(
         .find(|r| r.id == id)
         .and_then(|r| r.resumable_store_path);
 
+    let staged = staged.inner().clone();
     tokio::task::spawn_blocking(move || {
-        stat_partial_store(raw_path.as_deref(), &engine::storage::temp_dir())
+        stat_partial_store(raw_path.as_deref(), &engine::storage::temp_dir(), &staged)
     })
     .await
     .map_err(|e| format!("Task join error: {}", e))
@@ -2428,6 +2460,7 @@ pub async fn get_transfer_temp_data(
 pub async fn clear_transfer_temp_data(
     id: String,
     history: State<'_, Arc<TransferHistoryStore>>,
+    staged: State<'_, Arc<StagedStores>>,
     state: State<'_, AppStateMutex>,
 ) -> Result<(), String> {
     let record = history
@@ -2444,7 +2477,7 @@ pub async fn clear_transfer_temp_data(
         }
     }
 
-    engine::reclaim_partial(&record, &engine::storage::temp_dir());
+    engine::reclaim_partial(&record, &engine::storage::temp_dir(), &staged);
     history
         .update(&id, |r| r.resumable_store_path = None)
         .map_err(|e| e.to_string())?;

@@ -13,6 +13,8 @@ use std::sync::Mutex;
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
 
+use crate::staged_stores::StagedStores;
+
 /// Rows kept before the oldest are dropped.
 pub const MAX_RECORDS: usize = 500;
 
@@ -164,10 +166,14 @@ pub fn partial_store_hash(path: &Path) -> Option<String> {
 }
 
 /// Whether `path` is a partial-receive store this app may delete: the name must
-/// be one we generate *and* the directory must sit directly in the temp dir.
-pub fn is_reclaimable_partial(path: &Path, temp_dir: &Path) -> bool {
+/// be one we generate *and* the directory must either sit directly in the temp
+/// dir or be a store we recorded staging in a destination folder.
+pub fn is_reclaimable_partial(path: &Path, temp_dir: &Path, staged: &StagedStores) -> bool {
     if partial_store_hash(path).is_none() {
         return false;
+    }
+    if staged.contains(path) {
+        return true;
     }
     let Some(parent) = path.parent() else {
         return false;
@@ -180,17 +186,22 @@ pub fn is_reclaimable_partial(path: &Path, temp_dir: &Path) -> bool {
 
 /// Deletes a record's partial store, if it has one and it's safe to delete.
 /// Called when a row is deleted, which is the only pointer to that disk space.
-pub fn reclaim_partial(record: &TransferRecord, temp_dir: &Path) -> bool {
+pub fn reclaim_partial(record: &TransferRecord, temp_dir: &Path, staged: &StagedStores) -> bool {
     let Some(raw) = record.resumable_store_path.as_deref() else {
         return false;
     };
     let path = PathBuf::from(raw);
-    if !is_reclaimable_partial(&path, temp_dir) {
+    if !is_reclaimable_partial(&path, temp_dir, staged) {
         tracing::warn!("refusing to reclaim non-partial path {}", path.display());
         return false;
     }
     match std::fs::remove_dir_all(&path) {
-        Ok(()) => true,
+        Ok(()) => {
+            if let Err(e) = staged.forget(&path) {
+                tracing::warn!("failed to forget {}: {e:#}", path.display());
+            }
+            true
+        }
         Err(e) => {
             tracing::warn!("failed to reclaim {}: {e}", path.display());
             false
@@ -595,7 +606,9 @@ mod tests {
         let elsewhere = TempDir::new().expect("other tempdir");
         let outside = partial_dir(elsewhere.path(), HASH_A);
 
-        assert!(!is_reclaimable_partial(&outside, temp.path()));
+        let staged = StagedStores::new(temp.path());
+
+        assert!(!is_reclaimable_partial(&outside, temp.path(), &staged));
     }
 
     #[test]
@@ -603,7 +616,9 @@ mod tests {
         let temp = TempDir::new().expect("tempdir");
         let inside = partial_dir(temp.path(), HASH_A);
 
-        assert!(is_reclaimable_partial(&inside, temp.path()));
+        let staged = StagedStores::new(temp.path());
+
+        assert!(is_reclaimable_partial(&inside, temp.path(), &staged));
     }
 
 
@@ -617,8 +632,28 @@ mod tests {
         let mut record = record("interrupted");
         record.resumable_store_path = Some(partial.to_string_lossy().to_string());
 
-        assert!(reclaim_partial(&record, temp.path()));
+        let staged = StagedStores::new(temp.path());
+
+        assert!(reclaim_partial(&record, temp.path(), &staged));
         assert!(!partial.exists());
+    }
+
+    #[test]
+    fn reclaiming_removes_a_store_staged_in_a_destination_folder() {
+        let data = TempDir::new().expect("data dir");
+        let temp = TempDir::new().expect("tempdir");
+        let dest = TempDir::new().expect("destination");
+        let partial = partial_dir(dest.path(), HASH_A);
+        let staged = StagedStores::new(data.path());
+        staged.remember(&partial, temp.path()).expect("remember");
+        let mut record = record("interrupted");
+        record.resumable_store_path = Some(partial.to_string_lossy().to_string());
+
+        assert!(reclaim_partial(&record, temp.path(), &staged));
+
+        assert!(!partial.exists());
+        assert!(dest.path().exists(), "the destination folder is untouched");
+        assert!(!staged.contains(&partial));
     }
 
     #[test]
@@ -629,7 +664,9 @@ mod tests {
         let mut record = record("tampered");
         record.resumable_store_path = Some(outside.to_string_lossy().to_string());
 
-        assert!(!reclaim_partial(&record, temp.path()));
+        let staged = StagedStores::new(temp.path());
+
+        assert!(!reclaim_partial(&record, temp.path(), &staged));
         assert!(outside.exists());
     }
 

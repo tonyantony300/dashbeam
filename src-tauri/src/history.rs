@@ -363,9 +363,9 @@ fn parse_file_names(payload: &str) -> Option<Vec<String>> {
     serde_json::from_str::<Vec<String>>(payload).ok()
 }
 
-/// Where a partial receive for `hash` would live.
-pub fn partial_store_path_for(hash: &str) -> PathBuf {
-    engine::storage::temp_dir().join(format!("{}{hash}", engine::storage::RECV_DIR_PREFIX))
+/// Where a partial receive for `hash` bound for `output_dir` is staged.
+pub fn partial_store_path_for(hash: &str, output_dir: &std::path::Path) -> PathBuf {
+    engine::storage::recv_store_dir(hash, output_dir)
 }
 
 #[cfg(test)]

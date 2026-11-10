@@ -18,14 +18,19 @@ pub struct ExportConflict {
 }
 
 /// Export a collection into `output_dir`, resolving filename conflicts when needed.
+///
+/// `ExportMode::TryReference` moves each blob out of the store instead of
+/// copying it. Only ask for it when the store is on the destination's volume:
+/// it is then a rename, so the payload never exists twice.
 pub async fn export_to_directory(
     db: &Store,
     collection: Collection,
     output_dir: &Path,
+    mode: ExportMode,
 ) -> anyhow::Result<Vec<ExportConflict>> {
     let mut conflicts = Vec::new();
 
-    for (_i, (name, hash)) in collection.iter().enumerate() {
+    for (name, hash) in collection.iter() {
         let desired_target = get_export_path(output_dir, name)?;
         let target = if desired_target.exists() {
             let resolved = resolve_conflict_path(&desired_target)?;
@@ -44,28 +49,45 @@ pub async fn export_to_directory(
             })?;
         }
 
-        let mut stream = db
-            .export_with_opts(ExportOptions {
-                hash: *hash,
-                target,
-                mode: ExportMode::Copy,
-            })
-            .stream()
-            .await;
-
-        while let Some(item) = stream.next().await {
-            match item {
-                ExportProgressItem::Size(_size) => {}
-                ExportProgressItem::CopyProgress(_offset) => {}
-                ExportProgressItem::Done => {}
-                ExportProgressItem::Error(cause) => {
-                    anyhow::bail!("error exporting {}: {}", name, cause);
+        if mode == ExportMode::TryReference {
+            match export_blob(db, *hash, &target, mode).await {
+                Ok(()) => continue,
+                // A failed move leaves the blob in the store (e.g. the target
+                // sits behind a mount point), so a plain copy can still succeed.
+                Err(cause) => {
+                    tracing::warn!("could not move {name} into place, copying: {cause}")
                 }
             }
         }
+        export_blob(db, *hash, &target, ExportMode::Copy)
+            .await
+            .map_err(|cause| anyhow::anyhow!("error exporting {}: {}", name, cause))?;
     }
 
     Ok(conflicts)
+}
+
+async fn export_blob(
+    db: &Store,
+    hash: iroh_blobs::Hash,
+    target: &Path,
+    mode: ExportMode,
+) -> Result<(), String> {
+    let mut stream = db
+        .export_with_opts(ExportOptions {
+            hash,
+            target: target.to_path_buf(),
+            mode,
+        })
+        .stream()
+        .await;
+
+    while let Some(item) = stream.next().await {
+        if let ExportProgressItem::Error(cause) = item {
+            return Err(cause.to_string());
+        }
+    }
+    Ok(())
 }
 
 fn resolve_conflict_path(path: &Path) -> anyhow::Result<PathBuf> {

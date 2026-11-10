@@ -17,7 +17,9 @@ pub struct AppState {
     /// Hash of the receive in flight, so history cannot delete the partial
     /// store out from under an active download.
     pub current_receive_hash: Option<String>,
-    pub last_cancelled_recv_hash: Option<String>,
+    /// Hash and destination of the last receive that left a partial store
+    /// behind; together they locate it.
+    pub last_cancelled_recv: Option<(String, std::path::PathBuf)>,
 }
 
 impl Default for AppState {
@@ -31,7 +33,7 @@ impl Default for AppState {
             launch_intent: None,
             current_receive_cancel: None,
             current_receive_hash: None,
-            last_cancelled_recv_hash: None,
+            last_cancelled_recv: None,
         }
     }
 }
