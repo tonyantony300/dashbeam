@@ -29,9 +29,14 @@ export function UpdateProgressBar({
 				</ProgressTrack>
 			</Progress>
 			{contentLength !== null && (
-				<p className="text-muted-foreground text-xs tabular-nums">
-					{formatFileSize(downloadedBytes, { precision: 1 })} /{' '}
-					{formatFileSize(contentLength, { precision: 1 })}
+				<p className="flex justify-between text-muted-foreground text-xs tabular-nums">
+					<span>
+						{formatFileSize(downloadedBytes, { precision: 1 })} /{' '}
+						{formatFileSize(contentLength, { precision: 1 })}
+					</span>
+					{progressRatio !== null && (
+						<span>{Math.round(progressRatio * 100)}%</span>
+					)}
 				</p>
 			)}
 		</div>

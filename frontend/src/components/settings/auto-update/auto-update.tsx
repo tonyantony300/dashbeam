@@ -16,11 +16,13 @@ import {
 	useInstallUpdate,
 } from '../../../hooks/use-updater'
 import { useIsWindowsPortable } from '../../../hooks/use-windows-portable'
+import { RestartToUpdate, UpdateError } from '../../common/update-actions'
 import { UpdateProgressBar } from '../../common/update-progress'
+import { VERSION, VERSION_DISPLAY } from '../../../lib/version'
 import { toastManager } from '../../ui/toast'
 
 export function AutoUpdate() {
-	const { t } = useTranslation()
+	const { t, i18n } = useTranslation()
 	const value = useAppSettingStore((r) => r.autoUpdate)
 	const toggle = useAppSettingStore((r) => r.setAutoUpdate)
 	const { data: isPortable = false } = useIsWindowsPortable()
@@ -31,9 +33,25 @@ export function AutoUpdate() {
 	const contentLength = useUpdaterStore((s) => s.contentLength)
 	const progressRatio = useUpdaterStore((s) => s.progressRatio)
 	const downloadUrl = useUpdaterStore((s) => s.downloadUrl)
+	const lastCheckedAt = useUpdaterStore((s) => s.lastCheckedAt)
+	const openWhatsNew = useUpdaterStore((s) => s.openWhatsNew)
 
 	const checkForUpdates = useCheckForUpdatesMutation()
-	const { install, restart } = useInstallUpdate()
+	const { install } = useInstallUpdate()
+
+	let lastChecked: string | null = null
+	if (lastCheckedAt !== null) {
+		const options = { dateStyle: 'medium', timeStyle: 'short' } as const
+		try {
+			lastChecked = new Date(lastCheckedAt).toLocaleString(
+				i18n.language,
+				options
+			)
+		} catch {
+			// A locale directory name the runtime doesn't know as a BCP 47 tag.
+			lastChecked = new Date(lastCheckedAt).toLocaleString(undefined, options)
+		}
+	}
 
 	const handleCheckForUpdates = () => {
 		checkForUpdates.mutate(undefined, {
@@ -101,39 +119,64 @@ export function AutoUpdate() {
 						/>
 					)}
 
+					{(phase === 'available' || phase === 'ready') && <UpdateError />}
+
 					{phase === 'available' && (
-						<div className="flex justify-end">
+						<div className="flex items-center justify-end gap-2">
+							{version && (
+								<Button
+									variant="link"
+									size="sm"
+									className="me-auto px-0"
+									onClick={() => openWhatsNew({ version, installed: false })}
+								>
+									{t('updater.whatsNew')}
+								</Button>
+							)}
 							<Button size="sm" onClick={() => void install()}>
 								{downloadUrl ? t('updater.download') : t('updater.updateNow')}
 							</Button>
 						</div>
 					)}
 
-					{phase === 'ready' && (
-						<div className="flex justify-end">
-							<Button size="sm" onClick={() => void restart()}>
-								{t('updater.restartNow')}
-							</Button>
-						</div>
-					)}
+					{phase === 'ready' && <RestartToUpdate />}
 				</FramePanel>
 			)}
 
-			{value === false && (
-				<FrameFooter className="flex-row justify-end">
-					<Button
-						className="w-48"
-						variant="secondary"
-						onClick={handleCheckForUpdates}
-						disabled={checkForUpdates.isPending}
-					>
-						{checkForUpdates.isPending ? (
-							<Loader2 className="mr-2 h-4 w-4 animate-spin" />
-						) : null}
-						{t('updater.checkForUpdates')}
-					</Button>
-				</FrameFooter>
-			)}
+			{/* Always offered: auto-check only runs every few hours. */}
+			<FrameFooter className="flex-row flex-wrap items-center justify-between gap-3">
+				<div className="text-muted-foreground text-xs">
+					<p>
+						{t('updater.currentVersion', { version: VERSION_DISPLAY })}
+						{' · '}
+						<button
+							type="button"
+							className="underline underline-offset-2 hover:text-foreground"
+							onClick={() =>
+								openWhatsNew({ version: VERSION, installed: true })
+							}
+						>
+							{t('updater.whatsNew')}
+						</button>
+					</p>
+					{lastChecked && (
+						<p>{t('updater.lastChecked', { time: lastChecked })}</p>
+					)}
+				</div>
+				<Button
+					variant="secondary"
+					onClick={handleCheckForUpdates}
+					disabled={
+						checkForUpdates.isPending ||
+						(phase !== 'idle' && phase !== 'available')
+					}
+				>
+					{checkForUpdates.isPending ? (
+						<Loader2 className="mr-2 h-4 w-4 animate-spin" />
+					) : null}
+					{t('updater.checkForUpdates')}
+				</Button>
+			</FrameFooter>
 		</Frame>
 	)
 }
