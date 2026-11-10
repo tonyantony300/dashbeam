@@ -1,7 +1,7 @@
 import { useEffect } from 'react'
 import { useTranslation } from '@/i18n'
 import { shortFingerprint } from '@/lib/fingerprint'
-import { IS_PAIRING_CAPABLE } from '@/lib/platform'
+import { IS_NEARBY_CAPABLE } from '@/lib/platform'
 import { listen } from '@/lib/platform-api'
 import { usePairingDataStore } from '@/store/pairing-data-store'
 import { useNearbyVerificationStore } from '@/store/nearby-verification-store'
@@ -30,7 +30,7 @@ export function NearbyVerificationDialog() {
 	const thisEndpointId = usePairingDataStore((s) => s.thisDevice?.endpoint_id)
 
 	useEffect(() => {
-		if (!IS_PAIRING_CAPABLE || !target) return
+		if (!IS_NEARBY_CAPABLE || !target) return
 
 		let disposed = false
 		const unlistens: (() => void)[] = []
@@ -83,7 +83,7 @@ export function NearbyVerificationDialog() {
 		}
 	}, [target, clear])
 
-	if (!IS_PAIRING_CAPABLE) return null
+	if (!IS_NEARBY_CAPABLE) return null
 
 	const code = thisEndpointId ? shortFingerprint(thisEndpointId) : null
 

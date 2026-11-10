@@ -31,7 +31,7 @@ import {
 } from '../components/ui/select'
 import { toastManager } from '../components/ui/toast'
 import { listPairedDevices } from '../lib/pairing-api'
-import { IS_ANDROID, IS_PAIRING_CAPABLE } from '../lib/platform'
+import { IS_ANDROID, IS_IOS, IS_PAIRING_CAPABLE } from '../lib/platform'
 import { listen, revealItemInDir, type UnlistenFn } from '../lib/platform-api'
 import { resolveAndroidOpenTarget } from '../lib/history-open-target'
 import { openDownloadFolder, openDownloadTarget } from '../plugins/nativeUtils'
@@ -191,7 +191,9 @@ export function HistoryPage() {
 				setMissingTarget(record)
 				return
 			}
-			await revealItemInDir(path)
+			// The opener plugin can't reveal files on iOS.
+			if (IS_IOS) await openDownloadTarget(path)
+			else await revealItemInDir(path)
 		} catch (error) {
 			console.error(error)
 			toastManager.add({

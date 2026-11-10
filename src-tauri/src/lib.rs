@@ -183,47 +183,47 @@ pub fn run() {
             clear_debug_logs,
             #[cfg(target_os = "android")]
             check_android_update,
-            #[cfg(any(desktop, target_os = "android"))]
+            #[cfg(any(desktop, target_os = "android", target_os = "ios"))]
             get_node_status,
-            #[cfg(any(desktop, target_os = "android"))]
+            #[cfg(any(desktop, target_os = "android", target_os = "ios"))]
             reconfigure_node_relay,
-            #[cfg(any(desktop, target_os = "android"))]
+            #[cfg(any(desktop, target_os = "android", target_os = "ios"))]
             get_device_info,
-            #[cfg(any(desktop, target_os = "android"))]
+            #[cfg(any(desktop, target_os = "android", target_os = "ios"))]
             set_device_display_name,
-            #[cfg(any(desktop, target_os = "android"))]
+            #[cfg(any(desktop, target_os = "android", target_os = "ios"))]
             get_pairing_ticket,
-            #[cfg(any(desktop, target_os = "android"))]
+            #[cfg(any(desktop, target_os = "android", target_os = "ios"))]
             start_pairing_host,
-            #[cfg(any(desktop, target_os = "android"))]
+            #[cfg(any(desktop, target_os = "android", target_os = "ios"))]
             stop_pairing_host,
-            #[cfg(any(desktop, target_os = "android"))]
+            #[cfg(any(desktop, target_os = "android", target_os = "ios"))]
             join_pairing,
-            #[cfg(any(desktop, target_os = "android"))]
+            #[cfg(any(desktop, target_os = "android", target_os = "ios"))]
             list_paired_devices,
-            #[cfg(any(desktop, target_os = "android"))]
+            #[cfg(any(desktop, target_os = "android", target_os = "ios"))]
             forget_paired_device,
-            #[cfg(any(desktop, target_os = "android"))]
+            #[cfg(any(desktop, target_os = "android", target_os = "ios"))]
             rename_paired_device,
-            #[cfg(any(desktop, target_os = "android"))]
+            #[cfg(any(desktop, target_os = "android", target_os = "ios"))]
             trust_paired_device,
-            #[cfg(any(desktop, target_os = "android"))]
+            #[cfg(any(desktop, target_os = "android", target_os = "ios"))]
             invite_paired_device,
-            #[cfg(any(desktop, target_os = "android"))]
+            #[cfg(any(desktop, target_os = "android", target_os = "ios"))]
             respond_paired_invite,
-            #[cfg(any(desktop, target_os = "android"))]
+            #[cfg(any(desktop, target_os = "android", target_os = "ios"))]
             list_nearby,
-            #[cfg(any(desktop, target_os = "android"))]
+            #[cfg(any(desktop, target_os = "android", target_os = "ios"))]
             nearby_status,
-            #[cfg(any(desktop, target_os = "android"))]
+            #[cfg(any(desktop, target_os = "android", target_os = "ios"))]
             get_discoverability,
-            #[cfg(any(desktop, target_os = "android"))]
+            #[cfg(any(desktop, target_os = "android", target_os = "ios"))]
             set_discoverability,
-            #[cfg(any(desktop, target_os = "android"))]
+            #[cfg(any(desktop, target_os = "android", target_os = "ios"))]
             invite_nearby_device,
-            #[cfg(any(desktop, target_os = "android"))]
+            #[cfg(any(desktop, target_os = "android", target_os = "ios"))]
             request_nearby_pair,
-            #[cfg(any(desktop, target_os = "android"))]
+            #[cfg(any(desktop, target_os = "android", target_os = "ios"))]
             respond_nearby_invite,
         ])
         .setup(|app| {
@@ -231,10 +231,13 @@ pub fn run() {
             // Before Android 13 `std::env::temp_dir()` is `/data/local/tmp`,
             // which the app cannot write, so blob stores go in the app cache
             // dir instead. That is also where `TMPDIR` points on 13+, so
-            // partial receives from earlier builds stay resumable. Desktop
-            // keeps the unmodified `std::env::temp_dir()` fallback for the
-            // same reason. Must run before `setup_common`, which scans it.
-            #[cfg(target_os = "android")]
+            // partial receives from earlier builds stay resumable. On iOS,
+            // `temp_dir()` is the sandbox `tmp/`, which the system clears
+            // while the app isn't running; `Library/Caches` is only purged
+            // under storage pressure, so a cancelled receive can still resume.
+            // Desktop keeps the unmodified `std::env::temp_dir()` fallback for
+            // the same reason. Must run before `setup_common`, which scans it.
+            #[cfg(any(target_os = "android", target_os = "ios"))]
             match app.path().app_cache_dir() {
                 Ok(dir) => {
                     let _ = engine::storage::TEMP_DIR.set(dir);
@@ -267,7 +270,7 @@ pub fn run() {
                     }
                 }
             }
-            #[cfg(any(desktop, target_os = "android"))]
+            #[cfg(any(desktop, target_os = "android", target_os = "ios"))]
             {
                 let handle = app.handle().clone();
                 tauri::async_runtime::block_on(async move {
@@ -375,7 +378,7 @@ pub fn run() {
         .expect("error while running tauri application")
         .run(|app, event| {
             if matches!(event, RunEvent::Exit) {
-                #[cfg(any(desktop, target_os = "android"))]
+                #[cfg(any(desktop, target_os = "android", target_os = "ios"))]
                 {
                     let state = app.state::<state::AppStateMutex>();
                     tauri::async_runtime::block_on(async move {

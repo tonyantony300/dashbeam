@@ -436,8 +436,9 @@ textarea {
 /*
   Edge-to-edge is enforced from Android API 35, so the system bars overlap the
   WebView. Android WebView only forwards those insets to env(safe-area-inset-*) on
-  some versions (broken below 136 and again between 138 and 143), so the native
-  plugin publishes --native-inset-* as well and the larger value wins. Both
+  some versions (broken below 136 and again between 138 and 143), and the iOS
+  webview doesn't report them either, so the native plugin publishes
+  --native-inset-* as well and the larger value wins. Both
   describe the same system bars, so max() never double counts them.
 */
 @supports (padding: env(safe-area-inset-top)) {

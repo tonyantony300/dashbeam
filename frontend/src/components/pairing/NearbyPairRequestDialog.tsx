@@ -5,7 +5,7 @@ import {
 	isKnownPairedEndpoint,
 	respondNearbyInvite,
 } from '@/lib/pairing-api'
-import { IS_PAIRING_CAPABLE } from '@/lib/platform'
+import { IS_NEARBY_CAPABLE } from '@/lib/platform'
 import { shortFingerprint } from '@/lib/fingerprint'
 import { listen } from '@/lib/platform-api'
 import {
@@ -40,7 +40,7 @@ export function NearbyPairRequestDialog() {
 	const [request, setRequest] = useState<NearbyPairRequestPayload | null>(null)
 
 	useEffect(() => {
-		if (!IS_PAIRING_CAPABLE) return
+		if (!IS_NEARBY_CAPABLE) return
 
 		let disposed = false
 		let unlisten: (() => void) | undefined
@@ -83,7 +83,7 @@ export function NearbyPairRequestDialog() {
 		}
 	}, [])
 
-	if (!IS_PAIRING_CAPABLE) return null
+	if (!IS_NEARBY_CAPABLE) return null
 
 	const notify = (endpointId: string, accepted: boolean) => {
 		void respondNearbyInvite(endpointId, accepted).catch(() => {

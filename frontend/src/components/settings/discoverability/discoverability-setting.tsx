@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Loader2 } from 'lucide-react'
 import { useTranslation } from '@/i18n'
-import { IS_PAIRING_CAPABLE } from '@/lib/platform'
+import { IS_NEARBY_CAPABLE } from '@/lib/platform'
 import {
 	getDiscoverability,
 	setDiscoverability,
@@ -37,7 +37,7 @@ export function DiscoverabilitySetting() {
 	const [isSaving, setIsSaving] = useState(false)
 
 	useEffect(() => {
-		if (!IS_PAIRING_CAPABLE) return
+		if (!IS_NEARBY_CAPABLE) return
 
 		let disposed = false
 
@@ -97,7 +97,7 @@ export function DiscoverabilitySetting() {
 		}
 	}
 
-	if (!IS_PAIRING_CAPABLE) return null
+	if (!IS_NEARBY_CAPABLE) return null
 
 	return (
 		<Frame>

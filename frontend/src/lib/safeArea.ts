@@ -1,4 +1,4 @@
-import { IS_ANDROID } from './platform'
+import { IS_MOBILE } from './platform'
 import { invoke } from './platform-api'
 
 type WindowInsets = {
@@ -35,20 +35,21 @@ async function readInsets(): Promise<boolean> {
 		)
 		return applyInsets(insets)
 	} catch (error) {
-		console.error('Failed to read Android window insets:', error)
+		console.error('Failed to read window insets:', error)
 		return false
 	}
 }
 
 /**
- * Publishes the Android system bar insets as `--native-inset-*` custom properties.
+ * Publishes the native system bar insets as `--native-inset-*` custom properties.
  *
- * Edge-to-edge is enforced from API 35, but Android WebView only forwards those insets
- * to `env(safe-area-inset-*)` on some versions, so `--safe-area-*` in index.css takes
- * whichever source reports the larger value.
+ * Edge-to-edge is enforced from Android API 35, but Android WebView only forwards
+ * those insets to `env(safe-area-inset-*)` on some versions, and the iOS webview
+ * doesn't report them either, so `--safe-area-*` in index.css takes whichever source
+ * reports the larger value.
  */
 export function initializeSafeAreaInsets(): void {
-	if (!IS_ANDROID) return
+	if (!IS_MOBILE) return
 
 	void (async () => {
 		if (await readInsets()) return
@@ -66,8 +67,8 @@ export function initializeSafeAreaInsets(): void {
 		}, RESIZE_DEBOUNCE_MS)
 	}
 
-	// Rotation, split screen, and switching between gesture and three-button
-	// navigation all change the insets while the app is running.
+	// Rotation, split screen, and (on Android) switching between gesture and
+	// three-button navigation all change the insets while the app is running.
 	window.addEventListener('resize', refresh)
 	window.addEventListener('orientationchange', refresh)
 	document.addEventListener('visibilitychange', () => {

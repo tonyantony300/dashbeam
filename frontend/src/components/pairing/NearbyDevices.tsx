@@ -8,7 +8,7 @@ import {
 	getDiscoverability,
 	requestNearbyPair,
 } from '@/lib/pairing-api'
-import { IS_PAIRING_CAPABLE } from '@/lib/platform'
+import { IS_NEARBY_CAPABLE } from '@/lib/platform'
 import { listen } from '@/lib/platform-api'
 import {
 	type NearbyDevice,
@@ -43,7 +43,7 @@ export function NearbyDevices() {
 	const [pairState, setPairState] = useState<Record<string, PairState>>({})
 
 	useEffect(() => {
-		if (!IS_PAIRING_CAPABLE) return
+		if (!IS_NEARBY_CAPABLE) return
 
 		let disposed = false
 		let unlistenNearby: (() => void) | undefined
@@ -111,7 +111,7 @@ export function NearbyDevices() {
 		}
 	}, [hydrate, t])
 
-	if (!IS_PAIRING_CAPABLE) return null
+	if (!IS_NEARBY_CAPABLE) return null
 
 	const handlePair = async (device: NearbyDevice) => {
 		setPairState((prev) => ({ ...prev, [device.endpointId]: 'pairing' }))

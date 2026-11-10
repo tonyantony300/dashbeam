@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { IS_ANDROID, IS_DESKTOP, IS_TAURI } from '@/lib/platform'
+import { IS_ANDROID, IS_DESKTOP, IS_IOS, IS_TAURI } from '@/lib/platform'
 import { invoke } from '@/lib/platform-api'
 import type { RelayConfigArg } from '@/lib/relay-config'
 
@@ -21,7 +21,8 @@ export const debugLoggingQueryKeys = {
 	state: () => ['debug-logging'] as const,
 }
 
-export const DEBUG_LOGGING_SUPPORTED = IS_TAURI && (IS_DESKTOP || IS_ANDROID)
+export const DEBUG_LOGGING_SUPPORTED =
+	IS_TAURI && (IS_DESKTOP || IS_ANDROID || IS_IOS)
 
 /**
  * Verbosity is fixed at startup, so `enabled` and `activeThisSession` disagree
