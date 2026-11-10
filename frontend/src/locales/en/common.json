@@ -507,7 +507,18 @@
 		"cancel": "Cancel",
 		"dismiss": "Dismiss",
 		"download": "Download",
-		"sideloadHint": "Installs by downloading the new APK from the release page."
+		"sideloadHint": "Installs by downloading the new APK from the release page.",
+		"restartToUpdate": "Restart to update",
+		"updateFailedReason": "Update failed: {{reason}}",
+		"downloadManually": "Download manually",
+		"whatsNew": "What's new",
+		"whatsNewTitle": "What's new in {{version}}",
+		"whatsNewLoading": "Loading release notes…",
+		"whatsNewUnavailable": "The release notes couldn't be loaded. You can read them on GitHub.",
+		"viewOnGithub": "View on GitHub",
+		"close": "Close",
+		"currentVersion": "Version {{version}}",
+		"lastChecked": "Last checked {{time}}"
 	},
 	"android": {
 		"preparingFile": "Preparing file..."
