@@ -113,8 +113,10 @@ function reuploadAsset(assetPath, contentType) {
 	}
 
 	const name = path.basename(assetPath)
+	// Paginated: a release has more assets than the default page of 30, and a
+	// missed lookup skips the delete, so the upload below fails with a 422.
 	const assetId = execSync(
-		`gh api "repos/${repo}/releases/${releaseId}/assets" --jq ".[] | select(.name == \\"${name}\\") | .id // empty"`
+		`gh api --paginate "repos/${repo}/releases/${releaseId}/assets?per_page=100" --jq ".[] | select(.name == \\"${name}\\") | .id // empty"`
 	)
 		.toString()
 		.trim()

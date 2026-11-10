@@ -28,6 +28,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const repoRoot = path.join(__dirname, '..')
 
 const MANIFEST_NAME = 'latest.json'
+const MANIFEST_TEMP_NAME = 'latest.json.new'
 // Updater platform key -> suffix of the .deb asset patch-linux-deb.js re-uploads.
 const DEB_PLATFORMS = {
 	'linux-x86_64-deb': '_amd64.deb',
@@ -84,6 +85,17 @@ function downloadAsset(id) {
 		'-H',
 		'Accept: application/octet-stream',
 		`repos/${repo}/releases/assets/${id}`,
+	])
+}
+
+function renameAsset(id, name) {
+	gh([
+		'api',
+		'--method',
+		'PATCH',
+		`repos/${repo}/releases/assets/${id}`,
+		'-f',
+		`name=${name}`,
 	])
 }
 
@@ -198,35 +210,48 @@ function verifyManifest(manifest, assets, publicKey) {
 	return failures
 }
 
-function uploadManifest(releaseId, manifest, previousAssetId) {
+function uploadManifest(releaseId, manifest, assets, previousAssetId) {
 	const file = path.join(
 		fs.mkdtempSync(path.join(os.tmpdir(), 'dashbeam-manifest-')),
 		MANIFEST_NAME
 	)
 	fs.writeFileSync(file, `${JSON.stringify(manifest, null, 2)}\n`)
-	// GitHub has no in-place asset update: delete, then upload under the same name.
-	gh([
-		'api',
-		'--method',
-		'DELETE',
-		`repos/${repo}/releases/assets/${previousAssetId}`,
-	])
-	gh([
-		'api',
-		'--method',
-		'POST',
-		'-H',
-		'Content-Type: application/json',
-		'--input',
-		file,
-		`https://uploads.github.com/repos/${repo}/releases/${releaseId}/assets?name=${MANIFEST_NAME}`,
-	])
+	// GitHub has no in-place asset update. Upload under a temporary name, then
+	// swap, so a failed upload leaves the old manifest in place for a rerun.
+	const deleteAsset = (id) =>
+		gh(['api', '--method', 'DELETE', `repos/${repo}/releases/assets/${id}`])
+	const leftover = assets.find((asset) => asset.name === MANIFEST_TEMP_NAME)
+	if (leftover) deleteAsset(leftover.id)
+
+	const uploaded = JSON.parse(
+		gh([
+			'api',
+			'--method',
+			'POST',
+			'-H',
+			'Content-Type: application/json',
+			'--input',
+			file,
+			`https://uploads.github.com/repos/${repo}/releases/${releaseId}/assets?name=${MANIFEST_TEMP_NAME}`,
+		]).toString()
+	)
+	deleteAsset(previousAssetId)
+	renameAsset(uploaded.id, MANIFEST_NAME)
 	console.log(`Uploaded corrected ${MANIFEST_NAME}`)
 }
 
 const releaseId = resolveReleaseId()
 const assets = listAssets(releaseId)
-const manifestAsset = assets.find((asset) => asset.name === MANIFEST_NAME)
+let manifestAsset = assets.find((asset) => asset.name === MANIFEST_NAME)
+if (!manifestAsset && !checkOnly && !dryRun) {
+	// An earlier run died between deleting the old manifest and renaming the new one.
+	manifestAsset = assets.find((asset) => asset.name === MANIFEST_TEMP_NAME)
+	if (manifestAsset) {
+		renameAsset(manifestAsset.id, MANIFEST_NAME)
+		manifestAsset.name = MANIFEST_NAME
+		console.log(`Recovered ${MANIFEST_NAME} from ${MANIFEST_TEMP_NAME}`)
+	}
+}
 if (!manifestAsset)
 	fail(`${MANIFEST_NAME} is missing from release ${releaseId}`)
 
@@ -243,7 +268,7 @@ if (failures.length > 0) {
 if (changed && dryRun) {
 	console.log(`Dry run: not uploading the corrected ${MANIFEST_NAME}.`)
 } else if (changed) {
-	uploadManifest(releaseId, manifest, manifestAsset.id)
+	uploadManifest(releaseId, manifest, assets, manifestAsset.id)
 } else {
 	console.log(`${MANIFEST_NAME} already matches the release assets.`)
 }
