@@ -34,6 +34,9 @@ pub(crate) struct PairRequestPayload {
     pub sender_name: String,
 }
 
+/// How long to wait for a sender's metadata when filling in file names.
+const NAMES_FETCH_TIMEOUT: Duration = Duration::from_secs(20);
+
 /// An invite waiting for an answer. At most one per device is listed: the oldest.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PendingInvite {
@@ -43,6 +46,14 @@ pub struct PendingInvite {
     pub file_count: u32,
     pub total_size: u64,
     pub received_at_ms: u64,
+    /// From the sender's metadata, fetched in the background; empty until then.
+    #[serde(default)]
+    pub file_names: Vec<String>,
+    /// When the invite is declined unanswered (unix ms), and as RFC 3339 UTC.
+    #[serde(default)]
+    pub expires_at_ms: u64,
+    #[serde(default)]
+    pub expires_at: Option<String>,
 }
 
 /// An `accept_incoming` / `decline_incoming` call, handed to the sender's driver.
@@ -223,7 +234,7 @@ impl AgentService {
             Route::PreApproved => {
                 let svc = self.clone();
                 tokio::spawn(async move {
-                    let info = pending_info(&invite);
+                    let info = pending_info(&invite, svc.config().invite_timeout_secs);
                     if let Err(e) = svc.accept_invite(&info, invite.blob_ticket, true).await {
                         tracing::warn!(
                             sender = %info.endpoint_id,
@@ -271,7 +282,13 @@ impl AgentService {
             }
         });
         let name = self.peer_name(&invite.remote_endpoint_id, &invite.sender_name);
-        let rec = self.insert_inbound(&invite.remote_endpoint_id, &name, invite.total_size);
+        let rec = self.insert_inbound(
+            &invite.remote_endpoint_id,
+            &name,
+            invite.total_size,
+            Vec::new(),
+        );
+        self.spawn_fill_record_names(rec.id.clone(), invite.blob_ticket.clone());
         self.receive(
             rec.id,
             invite.blob_ticket,
@@ -284,14 +301,16 @@ impl AgentService {
     fn hold_pending(self: &Arc<Self>, invite: InvitePayload, nearby: bool) {
         let key = invite.remote_endpoint_id.to_lowercase();
         let (tx, rx) = oneshot::channel();
+        let timeout = self.config().invite_timeout_secs;
         let entry = PendingEntry {
-            info: pending_info(&invite),
+            info: pending_info(&invite, timeout),
             ticket: invite.blob_ticket,
             nearby,
-            deadline: Instant::now() + Duration::from_secs(self.config().invite_timeout_secs),
+            deadline: Instant::now() + Duration::from_secs(timeout),
             answer_tx: Some(tx),
             answer_rx: Some(rx),
         };
+        let (invite_id, ticket) = (entry.info.invite_id.clone(), entry.ticket.clone());
         let start_driver = {
             let mut map = self.inbound.pending();
             match map.get_mut(&key) {
@@ -316,8 +335,57 @@ impl AgentService {
             }
         };
         if start_driver {
-            tokio::spawn(self.clone().drive_pending(key));
+            tokio::spawn(self.clone().drive_pending(key.clone()));
         }
+        self.spawn_fill_pending_names(key, invite_id, ticket);
+    }
+
+    /// Fills a pending invite's `file_names` from the sender's metadata.
+    fn spawn_fill_pending_names(self: &Arc<Self>, key: String, invite_id: String, ticket: String) {
+        let svc = self.clone();
+        tokio::spawn(async move {
+            let Some(names) = svc.fetch_file_names(&ticket).await else {
+                return;
+            };
+            if let Some(e) = svc
+                .inbound
+                .pending()
+                .get_mut(&key)
+                .and_then(|q| q.iter_mut().find(|e| e.info.invite_id == invite_id))
+            {
+                e.info.file_names = names;
+            }
+        });
+    }
+
+    /// Sets a live record's `file_names` from the sender's metadata, so they
+    /// show before the download finishes (or if it fails).
+    pub(crate) fn spawn_fill_record_names(self: &Arc<Self>, rec_id: String, ticket: String) {
+        let svc = self.clone();
+        tokio::spawn(async move {
+            let Some(names) = svc.fetch_file_names(&ticket).await else {
+                return;
+            };
+            svc.registry().update_live(&rec_id, |r| {
+                if r.file_names.is_empty() {
+                    r.file_names = names;
+                }
+            });
+        });
+    }
+
+    /// File names from a ticket's metadata, or `None` if the sender doesn't
+    /// answer in time (plain sendme tickets carry no metadata).
+    async fn fetch_file_names(&self, ticket: &str) -> Option<Vec<String>> {
+        let options = self.receive_options(None).ok()?;
+        let meta = tokio::time::timeout(
+            NAMES_FETCH_TIMEOUT,
+            engine::fetch_metadata(ticket.to_string(), options),
+        )
+        .await
+        .ok()?
+        .ok()?;
+        names_from_metadata(&meta)
     }
 
     /// Answers one sender's pending invites in order: whichever comes first of
@@ -401,7 +469,8 @@ impl AgentService {
                     }
                 }
             };
-            self.pop_pending(&key);
+            // The entry's info may have gained file names while it waited.
+            let info = self.pop_pending(&key).unwrap_or(info);
 
             match verdict {
                 Verdict::Answered(Answer::Accept(reply)) => {
@@ -430,10 +499,12 @@ impl AgentService {
         }
     }
 
-    fn pop_pending(&self, key: &str) {
-        if let Some(q) = self.inbound.pending().get_mut(key) {
-            q.pop_front();
-        }
+    fn pop_pending(&self, key: &str) -> Option<PendingInvite> {
+        self.inbound
+            .pending()
+            .get_mut(key)
+            .and_then(|q| q.pop_front())
+            .map(|e| e.info)
     }
 
     /// Nearby: `accept_nearby_invite` records the pairing first. The download
@@ -452,7 +523,10 @@ impl AgentService {
                 .context("accept nearby invite")?;
         }
         let name = self.peer_name(&id, &info.sender_name);
-        let rec = self.insert_inbound(&id, &name, info.total_size);
+        let rec = self.insert_inbound(&id, &name, info.total_size, info.file_names.clone());
+        if info.file_names.is_empty() {
+            self.spawn_fill_record_names(rec.id.clone(), ticket.clone());
+        }
         let svc = self.clone();
         let rec_id = rec.id.clone();
         let sender = id.clone();
@@ -540,7 +614,13 @@ impl AgentService {
     }
 
     /// Inserts the record and its cancel slot; [`Self::receive`] starts it.
-    fn insert_inbound(&self, endpoint_id: &str, name: &str, total: u64) -> TransferRecord {
+    fn insert_inbound(
+        &self,
+        endpoint_id: &str,
+        name: &str,
+        total: u64,
+        file_names: Vec<String>,
+    ) -> TransferRecord {
         let rec = self.registry().insert(TransferRecord {
             id: String::new(),
             seq: 0,
@@ -550,7 +630,7 @@ impl AgentService {
                 name: Some(name.to_string()),
                 endpoint_id: Some(endpoint_id.to_string()),
             }),
-            file_names: Vec::new(),
+            file_names,
             total_bytes: total,
             bytes_done: 0,
             status: TransferStatus::Transferring,
@@ -620,7 +700,7 @@ impl AgentService {
                 tracing::warn!(transfer = %rec_id, "inbound transfer failed: {e:#}");
                 self.registry().update(&rec_id, |r| {
                     r.status = TransferStatus::Failed;
-                    r.error = Some(format!("{e:#}"));
+                    r.error = Some(failure_message(&e, r.kind));
                 });
             }
         }
@@ -716,15 +796,43 @@ fn consult_approver(nearby: bool, allow_agent_pairing: bool, answers_paired: boo
     answers_paired
 }
 
-fn pending_info(invite: &InvitePayload) -> PendingInvite {
+fn pending_info(invite: &InvitePayload, timeout_secs: u64) -> PendingInvite {
+    let now = engine::unix_now_ms();
+    let expires_at_ms = now.saturating_add(timeout_secs.saturating_mul(1000));
     PendingInvite {
         invite_id: uuid::Uuid::new_v4().to_string(),
         endpoint_id: invite.remote_endpoint_id.clone(),
         sender_name: invite.sender_name.clone(),
         file_count: invite.file_count,
         total_size: invite.total_size,
-        received_at_ms: engine::unix_now_ms(),
+        received_at_ms: now,
+        file_names: Vec::new(),
+        expires_at_ms,
+        expires_at: crate::registry::rfc3339_utc(expires_at_ms),
     }
+}
+
+/// Item names when the metadata lists them, else the single file's name.
+fn names_from_metadata(meta: &engine::FileMetadata) -> Option<Vec<String>> {
+    if let Some(items) = meta.items.as_ref().filter(|i| !i.is_empty()) {
+        return Some(items.iter().map(|i| i.file_name.clone()).collect());
+    }
+    (meta.item_count <= 1 && !meta.file_name.is_empty()).then(|| vec![meta.file_name.clone()])
+}
+
+/// A failed download's error, with a hint when the sender couldn't be reached.
+fn failure_message(e: &anyhow::Error, kind: TransferKind) -> String {
+    let msg = format!("{e:#}");
+    if !msg.contains("Connection failed") {
+        return msg;
+    }
+    let hint = match kind {
+        TransferKind::Ticket => {
+            "the sender is unreachable: it may be offline, or this one-time ticket was already downloaded or has expired"
+        }
+        TransferKind::Paired => "the sender is unreachable: it may be offline or have stopped sharing",
+    };
+    format!("{msg} ({hint})")
 }
 
 /// Peer-chosen name made safe as one path component; falls back to a short id.

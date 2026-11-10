@@ -104,6 +104,12 @@ pub fn log_path(data_dir: &Path) -> PathBuf {
     data_dir.join("node.log")
 }
 
+/// The node's own blob-store root, so its partial downloads never share the OS
+/// temp dir with the desktop app (whose launch sweep would delete them).
+pub fn temp_path(data_dir: &Path) -> PathBuf {
+    data_dir.join("tmp")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

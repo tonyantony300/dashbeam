@@ -225,6 +225,7 @@ impl AgentService {
             .receive_dir(self.data_dir())
             .join("tickets")
             .join(&rec.id);
+        self.spawn_fill_record_names(rec.id.clone(), ticket.to_string());
         let svc = self.clone();
         let (id, ticket) = (rec.id.clone(), ticket.to_string());
         tokio::spawn(async move { svc.receive_into(id, ticket, out_dir).await });

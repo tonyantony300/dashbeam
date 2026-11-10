@@ -362,7 +362,7 @@ impl DashbeamMcp {
     }
 
     #[tool(
-        description = "Pending invites from paired devices that are not trusted. Each waits for accept_incoming or decline_incoming until it times out. Files from trusted devices arrive without an invite. When the node runs with --dangerously-allow-agent-pairing this also lists invites from unpaired nearby devices; accepting one of those pairs that device."
+        description = "Pending invites from paired devices that are not trusted, with file_count, total_size, file_names (filled in shortly after arrival; may be empty) and expires_at. Each waits for accept_incoming or decline_incoming until it times out. Files from trusted devices arrive without an invite. When the node runs with --dangerously-allow-agent-pairing this also lists invites from unpaired nearby devices; accepting one of those pairs that device."
     )]
     async fn list_incoming(&self) -> CallToolResult {
         respond(self.call(Request::ListIncoming).await)

@@ -412,6 +412,29 @@ async fn up(dir: &Path, args: UpArgs, iroh_secret_was_set: bool) -> Result<i32> 
     if iroh_secret_was_set {
         tracing::warn!("IROH_SECRET is set but ignored by the dashbeam agent");
     }
+    // Our own blob-store root, cleared under the lock: nothing else uses it.
+    let tmp = agent::paths::temp_path(dir);
+    std::fs::create_dir_all(&tmp).with_context(|| format!("create {}", tmp.display()))?;
+    let _ = engine::storage::TEMP_DIR.set(tmp.clone());
+    let swept = agent::tempstore::sweep_all(&tmp);
+    if swept > 0 {
+        tracing::info!(swept, "removed blob stores left by a previous run");
+    }
+    let pruner = tokio::spawn(async move {
+        let mut tick = tokio::time::interval(agent::tempstore::PRUNE_EVERY);
+        loop {
+            tick.tick().await;
+            let dir = tmp.clone();
+            let pruned = tokio::task::spawn_blocking(move || {
+                agent::tempstore::prune_stale(&dir, agent::tempstore::STALE_AFTER)
+            })
+            .await
+            .unwrap_or(0);
+            if pruned > 0 {
+                tracing::info!(pruned, "removed stale partial downloads");
+            }
+        }
+    });
     let mut config = AgentConfig::load(dir)?;
     if let Some(name) = args.name {
         config.name = Some(name);
@@ -454,6 +477,7 @@ async fn up(dir: &Path, args: UpArgs, iroh_secret_was_set: bool) -> Result<i32> 
     );
     let served = server.run(shutdown_signal()).await;
     tracing::info!("shutting down");
+    pruner.abort();
     let stopped = svc.shutdown().await;
     drop(lock);
     served?;
@@ -712,6 +736,9 @@ async fn inbox(dir: &Path, action: Option<InboxAction>, json: bool) -> Result<i3
                         p.file_count,
                         format_bytes(p.total_size)
                     );
+                    if !p.file_names.is_empty() {
+                        println!("    {}", safe(&p.file_names.join(", ")));
+                    }
                 }
             })
         }

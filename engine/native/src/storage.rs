@@ -35,13 +35,42 @@ pub async fn create_send_store(dir: &Path) -> anyhow::Result<FsStore> {
         .with_context(|| format!("failed to load send store at {}", dir.display()))
 }
 
+/// How long opening a partial-receive store may take before it's set aside.
+const RECV_STORE_LOAD_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+
 pub async fn create_recv_store(hash_hex: &str) -> anyhow::Result<(FsStore, PathBuf)> {
     let dir_name = format!("{RECV_DIR_PREFIX}{hash_hex}");
     let path = temp_dir().join(dir_name);
-    let store = FsStore::load(&path)
-        .await
-        .with_context(|| format!("failed to load recv store at {}", path.display()))?;
-    Ok((store, path))
+    match tokio::time::timeout(RECV_STORE_LOAD_TIMEOUT, FsStore::load(&path)).await {
+        Ok(store) => {
+            let store = store
+                .with_context(|| format!("failed to load recv store at {}", path.display()))?;
+            Ok((store, path))
+        }
+        // A store left by a process that died mid-download can hang `load`
+        // forever, wedging every later download of the same content. Move it
+        // aside (the prefix keeps it in the launch sweep) and start fresh.
+        Err(_) => {
+            let suffix = HEXLOWER.encode(&rand::rng().random::<[u8; 4]>());
+            let aside = temp_dir().join(format!("{RECV_DIR_PREFIX}{hash_hex}-unreadable-{suffix}"));
+            std::fs::rename(&path, &aside).with_context(|| {
+                format!(
+                    "partial download store {} did not open; remove it and retry",
+                    path.display()
+                )
+            })?;
+            tracing::warn!(
+                store = %path.display(),
+                moved_to = %aside.display(),
+                "partial download store did not open in time; starting fresh"
+            );
+            let store = tokio::time::timeout(RECV_STORE_LOAD_TIMEOUT, FsStore::load(&path))
+                .await
+                .context("recv store load timed out")?
+                .with_context(|| format!("failed to load recv store at {}", path.display()))?;
+            Ok((store, path))
+        }
+    }
 }
 
 pub fn recv_cleanup_guard(path: PathBuf) -> AutoCleanupDir {

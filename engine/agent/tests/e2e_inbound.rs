@@ -152,7 +152,16 @@ async fn wait_for(what: &str, check: impl Fn() -> bool) {
 async fn share(dir: &Path, name: &str, contents: &[u8]) -> SendResult {
     let path = dir.join(name);
     std::fs::write(&path, contents).unwrap();
-    engine::start_share_items(vec![path], SendOptions::default(), &None, None)
+    // Real senders (app and agent) publish metadata; the agent reads names from it.
+    let metadata = engine::FileMetadata {
+        file_name: name.to_string(),
+        item_count: 1,
+        size: contents.len() as u64,
+        thumbnail: None,
+        mime_type: None,
+        items: None,
+    };
+    engine::start_share_items(vec![path], SendOptions::default(), &None, Some(metadata))
         .await
         .expect("share")
 }
@@ -250,9 +259,22 @@ async fn untrusted_invite_waits_and_accept_incoming_downloads() {
     assert_eq!(pending.sender_name, "Laptop");
     assert_eq!(pending.file_count, 1);
     assert_eq!(pending.total_size, 7);
+    assert!(pending.expires_at_ms > pending.received_at_ms);
+    assert!(pending.expires_at.is_some());
+    // Filled in from the sender's metadata shortly after the invite lands.
+    wait_for("pending file names", || {
+        agent.list_incoming()[0].file_names == ["notes.txt"]
+    })
+    .await;
+    let pending = agent.list_incoming().remove(0);
 
     let started = agent.accept_incoming(&pending.invite_id).await.unwrap();
     assert_eq!(started.status, TransferStatus::Transferring);
+    assert_eq!(
+        started.file_names,
+        ["notes.txt"],
+        "known before the download"
+    );
     assert!(agent.list_incoming().is_empty());
     assert!(agent.accept_incoming(&pending.invite_id).await.is_err());
 

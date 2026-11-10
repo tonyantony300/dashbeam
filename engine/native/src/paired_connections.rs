@@ -321,6 +321,7 @@ impl PairedConnectionManager {
                     backoff_secs = PAIRED_RECONNECT_MIN_SECS;
 
                     self.set_session(&key, conn.clone()).await;
+                    self.spawn_identity_heal(endpoint_id, &conn);
 
                     // Read invites on the outbound (client) connection. The peer opens
                     // bi streams on this link when they are the QUIC server.
@@ -329,6 +330,10 @@ impl PairedConnectionManager {
                         unpaired = self.read_outbound_control_loop(&conn) => unpaired,
                     };
                     self.remove_session_if(&key, &conn).await;
+                    // "Last seen" is when the session ended, not when it began.
+                    let _ = self
+                        .paired_store
+                        .touch(endpoint_id, protocol::identity::unix_now_ms());
 
                     if unpaired_via_forget {
                         break;
@@ -376,6 +381,61 @@ impl PairedConnectionManager {
             backoff_secs = (backoff_secs * 2).min(PAIRED_RECONNECT_MAX_SECS);
         }
 
+    }
+
+    /// If the stored record still has pair-time fallbacks (see
+    /// [`crate::device_identity::needs_identity_heal`]), asks the peer over
+    /// this connection — its session loop answers paired peers — and fills
+    /// them in. Best effort.
+    fn spawn_identity_heal(&self, endpoint_id: &str, conn: &Connection) {
+        let needs = matches!(
+            self.paired_store.get(endpoint_id),
+            Ok(Some(d)) if crate::device_identity::needs_identity_heal(&d)
+        );
+        if !needs {
+            return;
+        }
+        let (store, conn, id) = (
+            self.paired_store.clone(),
+            conn.clone(),
+            endpoint_id.to_string(),
+        );
+        tokio::spawn(async move {
+            let reply = async {
+                let (mut send, mut recv) = conn.open_bi().await.ok()?;
+                write_message(&mut send, &ControlMessage::WhoAreYou)
+                    .await
+                    .ok()?;
+                tokio::time::timeout(Duration::from_secs(10), read_message(&mut recv))
+                    .await
+                    .ok()?
+                    .ok()
+            }
+            .await;
+            let Some(ControlMessage::Identity {
+                endpoint_id,
+                display_name,
+                device_type,
+                os,
+            }) = reply
+            else {
+                return;
+            };
+            // Self-reported: only cosmetic fields, and only for the id this
+            // connection authenticated.
+            if !endpoint_id.eq_ignore_ascii_case(&id) {
+                return;
+            }
+            match store.heal_identity(&id, &display_name, &device_type, &os) {
+                Ok(Some(d)) => tracing::info!(
+                    remote = %crate::node::short_remote(&id),
+                    name = %d.display_name,
+                    "filled in paired device identity"
+                ),
+                Ok(None) => {}
+                Err(e) => tracing::debug!("identity heal for {id} failed: {e:#}"),
+            }
+        });
     }
 
     async fn connect_and_recognize(

@@ -14,6 +14,7 @@ mod pairing;
 pub mod paths;
 pub mod registry;
 pub mod service;
+pub mod tempstore;
 mod tickets;
 
 pub use service::{AgentOptions, AgentService};

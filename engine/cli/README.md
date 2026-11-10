@@ -8,13 +8,15 @@
 cargo install --path engine/cli    # or: cargo build --release --manifest-path engine/Cargo.toml -p dashbeam-cli
 ```
 
+On Windows a running `dashbeam.exe` can't be replaced, so stop it before reinstalling: run `dashbeam stop`, close any MCP client that runs `dashbeam mcp` (or end the `dashbeam` processes), then `cargo install` again.
+
 The binary is `dashbeam` (Rust 1.91, pinned by `rust-toolchain.toml`).
 
 ## The node
 
 Each data dir has one long-lived node. Every command and `dashbeam mcp` auto-starts it if it is not running. `dashbeam up` runs it in the foreground (Ctrl-C to stop); `dashbeam status` shows whether it is up and how it started; `dashbeam stop` shuts it down.
 
-- Data dir: `--data-dir`, then `$DASHBEAM_AGENT_DIR`, then `<OS data dir>/dashbeam-agent`. It holds identity, `config.toml`, the control socket (`node.sock`), `node.log` and `received/`. On macOS and Linux `node.sock` is a Unix socket (mode 0600). On Windows it is a marker file naming a local named pipe that only your user can open.
+- Data dir: `--data-dir`, then `$DASHBEAM_AGENT_DIR`, then `<OS data dir>/dashbeam-agent`. It holds identity, `config.toml`, the control socket (`node.sock`), `node.log`, `received/` and `tmp/` (blob stores for transfers in progress). Partial downloads stay in `tmp/` so a re-send of the same files resumes; the node clears `tmp/` when it starts and drops partial downloads untouched for 24 hours. On macOS and Linux `node.sock` is a Unix socket (mode 0600). On Windows it is a marker file naming a local named pipe that only your user can open.
 - The agent has its own identity. It never touches the OS keychain, ignores `IROH_SECRET`, and never uses the desktop app's data dir.
 - Use `--json` on any command for raw JSON.
 
@@ -92,8 +94,10 @@ Limits:
 `dashbeam mcp` serves MCP over stdio and auto-starts the node.
 
 ```bash
-claude mcp add dashbeam -- dashbeam mcp
+claude mcp add --scope user dashbeam -- dashbeam mcp
 ```
+
+Without `--scope user`, Claude Code registers the server only for the directory you ran the command in, and sessions started elsewhere don't get the tools. Tools load when a session starts: after adding the server or reinstalling `dashbeam`, restart the session (or reconnect it from `/mcp`).
 
 Generic client config:
 
@@ -107,7 +111,7 @@ Generic client config:
 
 Tools (17): `get_identity`, `list_devices`, `list_nearby`, `send_to_device`, `share_ticket`, `receive_ticket`, `transfer_status`, `wait_for_transfer`, `cancel_transfer`, `list_transfers`, `wait_for_incoming`, `list_incoming`, `accept_incoming`, `decline_incoming`, `send_message`, `wait_for_message`, `list_messages`.
 
-Transfer results carry `transfer_id` (pass it to the other tools; `id` holds the same value) and, for tickets and invites, `expires_at` (RFC 3339 UTC; `expires_at_ms` is the same instant in unix milliseconds). `wait_*` calls default to 60 s and are capped at 120 s. Relative paths resolve against the MCP process's working directory.
+Pending invites (`list_incoming`) carry `file_names` (filled in from the sender's metadata shortly after the invite arrives; empty for senders that publish none) and `expires_at`, when an unanswered invite is declined. Transfer results carry `transfer_id` (pass it to the other tools; `id` holds the same value) and, for tickets and invites, `expires_at` (RFC 3339 UTC; `expires_at_ms` is the same instant in unix milliseconds). `wait_*` calls default to 60 s and are capped at 120 s. Relative paths resolve against the MCP process's working directory.
 
 `dashbeam up --dangerously-allow-agent-pairing` lets agents grow your network. With it:
 

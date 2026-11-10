@@ -125,7 +125,7 @@ impl Serialize for TransferRecord {
 }
 
 /// Unix milliseconds as RFC 3339 UTC, e.g. `2026-11-05T10:30:00.000Z`.
-fn rfc3339_utc(ms: u64) -> Option<String> {
+pub(crate) fn rfc3339_utc(ms: u64) -> Option<String> {
     let dt = chrono::DateTime::from_timestamp_millis(i64::try_from(ms).ok()?)?;
     Some(dt.to_rfc3339_opts(chrono::SecondsFormat::Millis, true))
 }

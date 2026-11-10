@@ -140,6 +140,50 @@ impl PairedDeviceStore {
         Ok(saved)
     }
 
+    /// Fills in identity fields still holding pair-time fallbacks (the
+    /// id-prefix name, an unknown OS) from the peer's own `Identity` reply.
+    /// Never overwrites a real or user-chosen name. `Some` when it changed.
+    pub fn heal_identity(
+        &self,
+        endpoint_id: &str,
+        display_name: &str,
+        device_type: &str,
+        os: &str,
+    ) -> anyhow::Result<Option<PairedDevice>> {
+        let _guard = self.lock_file();
+        let mut file = self.read_file()?;
+        let id = endpoint_id.to_lowercase();
+        let Some(existing) = file
+            .devices
+            .iter_mut()
+            .find(|d| d.endpoint_id.to_lowercase() == id)
+        else {
+            return Ok(None);
+        };
+        let mut changed = false;
+        if has_fallback_name(existing) {
+            if let Ok(name) = normalize_display_name(display_name) {
+                if name != existing.display_name {
+                    existing.display_name = name;
+                    changed = true;
+                }
+            }
+        }
+        if existing.os.is_empty() && !os.trim().is_empty() {
+            existing.os = os.trim().to_string();
+            if !device_type.trim().is_empty() {
+                existing.device_type = device_type.trim().to_string();
+            }
+            changed = true;
+        }
+        if !changed {
+            return Ok(None);
+        }
+        let saved = existing.clone();
+        self.write_file(&file)?;
+        Ok(Some(saved))
+    }
+
     pub fn trust_paired_device(
         &self,
         endpoint_id: &str,
@@ -273,6 +317,17 @@ impl Default for IdentityOptions {
             default_display_name: None,
         }
     }
+}
+
+/// The record still carries pair-time fallbacks that [`PairedDeviceStore::heal_identity`] can fill.
+pub fn needs_identity_heal(device: &PairedDevice) -> bool {
+    has_fallback_name(device) || device.os.is_empty()
+}
+
+/// The name a failed pair-time identity probe leaves: the id's first 8 chars.
+fn has_fallback_name(device: &PairedDevice) -> bool {
+    let prefix: String = device.endpoint_id.chars().take(8).collect();
+    device.display_name.eq_ignore_ascii_case(&prefix)
 }
 
 pub fn load_or_create_identity(data_dir: &Path) -> anyhow::Result<DeviceIdentity> {
@@ -590,5 +645,73 @@ mod identity_options_tests {
         let again = load_or_create_identity_with(dir.path(), &opts).unwrap();
         assert_eq!(again.device_type(), "agent");
         assert_eq!(again.endpoint_id(), first.endpoint_id());
+    }
+}
+
+#[cfg(test)]
+mod heal_identity_tests {
+    use super::{needs_identity_heal, PairedDeviceStore};
+    use protocol::identity::{PairedDevice, PairingStatus};
+
+    const ID: &str = "cd409d03701cc2f99532ef05bcb8aa015ce324c3b764145e4d458b3ecc5ce89a";
+
+    fn fallback() -> PairedDevice {
+        PairedDevice {
+            endpoint_id: ID.to_string(),
+            display_name: "cd409d03".to_string(),
+            device_type: "laptop".to_string(),
+            os: String::new(),
+            paired_at: 1,
+            last_seen_at: 1,
+            relay_url: None,
+            pairing_status: PairingStatus::Active,
+            trusted: true,
+        }
+    }
+
+    #[test]
+    fn fills_fallback_name_type_and_os() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = PairedDeviceStore::new(dir.path());
+        store.remember(fallback()).unwrap();
+        assert!(needs_identity_heal(&store.get(ID).unwrap().unwrap()));
+
+        let d = store
+            .heal_identity(ID, "A agent", "agent", "macos")
+            .unwrap()
+            .expect("changed");
+        assert_eq!(d.display_name, "A agent");
+        assert_eq!((d.device_type.as_str(), d.os.as_str()), ("agent", "macos"));
+        assert!(d.trusted, "trust untouched");
+        assert!(!needs_identity_heal(&d));
+        assert!(store
+            .heal_identity(ID, "A agent", "agent", "macos")
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn never_overwrites_a_real_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = PairedDeviceStore::new(dir.path());
+        store.remember(fallback()).unwrap();
+        store.rename(ID, "My renamed box").unwrap();
+
+        let d = store
+            .heal_identity(ID, "A agent", "agent", "macos")
+            .unwrap()
+            .expect("os still filled");
+        assert_eq!(d.display_name, "My renamed box");
+        assert_eq!(d.os, "macos");
+    }
+
+    #[test]
+    fn unknown_device_is_a_no_op() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = PairedDeviceStore::new(dir.path());
+        assert!(store
+            .heal_identity(ID, "x", "agent", "macos")
+            .unwrap()
+            .is_none());
     }
 }

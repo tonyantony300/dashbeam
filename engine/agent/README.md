@@ -39,7 +39,7 @@ The desktop app and the agent are separate nodes with separate identities, even 
 | File | What it owns |
 |---|---|
 | `service.rs` | `AgentService::start` / `shutdown`, the agent identity options, the event loop that routes engine events, `cancel_transfer`. |
-| `paths.rs` | Data dir resolution (`--data-dir` > `$DASHBEAM_AGENT_DIR` > `<OS data dir>/dashbeam-agent`), the guard that refuses the app's `com.dashbeam.desktop` dir, `node.sock` / `node.lock` / `node.log` paths. |
+| `paths.rs` | Data dir resolution (`--data-dir` > `$DASHBEAM_AGENT_DIR` > `<OS data dir>/dashbeam-agent`), the guard that refuses the app's `com.dashbeam.desktop` dir, `node.sock` / `node.lock` / `node.log` / `tmp` paths. |
 | `config.rs` | `config.toml` (`AgentConfig`, `[[pairing.authorized]]`). Unknown keys are rejected, so the dangerous flag can never be set from config. |
 | `lock.rs` | `NodeLock`: an exclusive file lock, so only one node runs per data dir. |
 | `events.rs` | `ChannelEmitter`: turns engine events into a channel the event loop reads. |
@@ -52,6 +52,7 @@ The desktop app and the agent are separate nodes with separate identities, even 
 | `outbound.rs` | Sends to paired devices: one worker ("lane") per device, invite, wait for answer, finish. |
 | `inbound.rs` | Invites arriving from other devices: auto-accept, hold for an answer, or decline; downloads; nearby pair requests. |
 | `tickets.rs` | `share_ticket` (one-time, expiring blob ticket) and `receive_ticket`. |
+| `tempstore.rs` | Housekeeping for blob stores under `<data dir>/tmp`: swept at startup, partial downloads pruned after 24 h idle. The CLI points `engine::storage::TEMP_DIR` there so the agent never shares the OS temp dir with the desktop app. |
 | `pairing.rs` | Pairing code / host / join, Nearby pair requests, trust, forget, `pairing.authorized` auto-pairing at startup, and the flag-gated `agent_*` variants. |
 
 ## Lifecycle
@@ -106,7 +107,7 @@ queued ─▶ starting ─▶ waiting_for_accept ─▶ transferring ─▶ deli
 
 ### Receive from a paired device
 
-Invites arrive as the engine's `paired-invite-received` event and are routed by the table above. Trusted invites go through one auto-accept worker (queue cap 20, duplicates dropped). Pending invites keep one FIFO per sender; `list_incoming` shows the oldest per device.
+Invites arrive as the engine's `paired-invite-received` event and are routed by the table above. Trusted invites go through one auto-accept worker (queue cap 20, duplicates dropped). Pending invites keep one FIFO per sender; `list_incoming` shows the oldest per device, with `expires_at` and the `file_names` a background metadata fetch fills in. Downloads get their `file_names` the same way, so a transfer that fails still says what it was.
 
 Downloads into the same folder run one at a time, because the engine's "does the file exist? then copy" step could otherwise overwrite. Existing files are never overwritten; conflicts get renamed, and `saved_paths` lists the real per-file paths. Sender names are sanitized into one safe folder name. Received files are never opened or executed.
 
@@ -160,6 +161,9 @@ The agent tests never touch your OS keychain. Nearby discovery is injected rathe
 - `max_ticket_receive_bytes` trusts the size in the sender's metadata; plain `sendme` tickets carry none and are rejected when the limit is set.
 - The registry is in memory: transfer history is gone after the node restarts.
 - `pairing.authorized` is read only at startup.
+- A sender's cancel reaches the receiver as a dropped connection, so the receiver's record ends `failed` ("connection lost"), not `cancelled`. Telling them apart needs a cancel signal on the wire.
+- Receiving a spent or expired ticket fails only after the connect attempts time out (a couple of minutes); the error then says the sender is unreachable and why that may be.
+- Received files go to a folder named after the sender's display name, so renaming a device starts a new folder.
 - Rare cases: a trusted receive can wait behind a same-sender folder lock, and an authorized peer's Nearby message can be dropped while a human pairing host is open.
 
 ## Roadmap

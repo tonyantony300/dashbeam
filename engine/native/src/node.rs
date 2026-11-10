@@ -589,6 +589,10 @@ impl ControlProtocol {
                 .paired_connections
                 .unregister_inbound(&endpoint_id, &conn)
                 .await;
+            let _ = self
+                .ctx
+                .paired_store
+                .touch(&endpoint_id, protocol::identity::unix_now_ms());
         }
 
         Ok(())
