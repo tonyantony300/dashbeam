@@ -6,6 +6,7 @@ use iroh::{
     address_lookup::{dns::DnsAddressLookup, pkarr::PkarrResolver},
     Endpoint,
 };
+use iroh_blobs::api::blobs::ExportMode;
 use iroh_blobs::ticket::BlobTicket;
 use std::str::FromStr;
 use tokio::select;
@@ -65,21 +66,29 @@ pub async fn download(
     }
 
     let endpoint = builder.bind().await?;
-    let (db, iroh_data_dir) =
-        storage::create_recv_store(&ticket.hash().to_hex().to_string()).await?;
-    let mut cleanup_guard = storage::recv_cleanup_guard(iroh_data_dir);
-    let db2 = db.clone();
     let output_dir = options
         .output_dir
         .clone()
         .unwrap_or_else(|| dirs::download_dir().unwrap_or_else(|| std::env::current_dir().unwrap()));
+    let recv_store =
+        storage::create_recv_store(&ticket.hash().to_hex().to_string(), &output_dir).await?;
+    // Same volume as the destination: move the blobs into place. From the temp
+    // dir the volumes may differ, so copy as before.
+    let export_mode = if recv_store.in_destination {
+        ExportMode::TryReference
+    } else {
+        ExportMode::Copy
+    };
+    let db = recv_store.store;
+    let mut cleanup_guard = storage::recv_cleanup_guard(recv_store.path);
+    let db2 = db.clone();
 
     let transfer = async {
         let downloaded =
             download_to_store(ticket, addr, &endpoint, db.as_ref(), &app_handle).await?;
 
         let export_start = std::time::Instant::now();
-        let conflicts = export_to_directory(&db, downloaded.collection, &output_dir).await?;
+        let conflicts = export_to_directory(&db, downloaded.collection, &output_dir, export_mode).await?;
         let export_duration_ms =
             protocol::duration_ms(export_start.elapsed().as_secs_f64());
 
@@ -121,6 +130,11 @@ pub async fn download(
     } {
         Ok(values) => {
             endpoint.close().await;
+            // Release the store's files before the guard deletes the directory;
+            // Windows cannot remove files that are still open.
+            if let Err(e) = db2.shutdown().await {
+                tracing::warn!("recv store did not shut down cleanly: {e}");
+            }
             values
         }
         Err(e) => {

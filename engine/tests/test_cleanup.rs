@@ -4,13 +4,14 @@ use common::{MockEventEmitter, TestFixture};
 use engine::{download, start_share, ReceiveOptions, SendOptions};
 use std::str::FromStr;
 
-/// Where the receiver keeps blobs for this ticket — the path comes from its hash.
-fn receiver_temp_dir(ticket: &str) -> std::path::PathBuf {
+/// Where the receiver stages blobs for this ticket: a hash-named store inside
+/// the destination folder.
+fn receiver_temp_dir(ticket: &str, output_dir: &std::path::Path) -> std::path::PathBuf {
     let parsed = iroh_blobs::ticket::BlobTicket::from_str(ticket).unwrap();
-    native::storage::temp_dir().join(format!(
-        ".dashbeam-recv-{}",
-        data_encoding::HEXLOWER.encode(parsed.hash().as_bytes())
-    ))
+    native::storage::recv_store_dir(
+        &data_encoding::HEXLOWER.encode(parsed.hash().as_bytes()),
+        output_dir,
+    )
 }
 
 /// Add up the size of every file under `path`.
@@ -92,7 +93,7 @@ async fn e2e_receiver_temp_dir_preserved_on_failure() {
         .await
         .unwrap();
     let ticket = share.ticket.clone();
-    let expected_path = receiver_temp_dir(&ticket);
+    let expected_path = receiver_temp_dir(&ticket, &recv_dir);
 
     // Drop the sender immediately so the receiver cannot connect
     drop(share);
@@ -127,7 +128,7 @@ async fn e2e_receiver_temp_dir_removed_on_success() {
         .await
         .unwrap();
     let ticket = share.ticket.clone();
-    let expected_path = receiver_temp_dir(&ticket);
+    let expected_path = receiver_temp_dir(&ticket, &recv_dir);
 
     let (_cancel_tx, cancel_rx) = common::no_cancel();
     let result = download(
@@ -169,7 +170,7 @@ async fn e2e_cancel_preserves_partial_store() {
         .await
         .unwrap();
     let ticket = share.ticket.clone();
-    let expected_path = receiver_temp_dir(&ticket);
+    let expected_path = receiver_temp_dir(&ticket, &fixture.output_dir());
     let _ = std::fs::remove_dir_all(&expected_path); // start clean
 
     // Send cancel immediately — the store is created before the select! runs,
@@ -215,7 +216,7 @@ async fn e2e_same_ticket_resumes_after_cancel() {
         .await
         .unwrap();
     let ticket = share.ticket.clone();
-    let partial_path = receiver_temp_dir(&ticket);
+    let partial_path = receiver_temp_dir(&ticket, &recv_dir);
     let _ = std::fs::remove_dir_all(&partial_path);
 
     // First attempt: cancel immediately.
@@ -283,7 +284,7 @@ async fn e2e_receiver_resumes_partial_download() {
         .await
         .unwrap();
     let ticket = share.ticket.clone();
-    let expected_path = receiver_temp_dir(&ticket);
+    let expected_path = receiver_temp_dir(&ticket, &recv_dir);
     // Start clean so the partial-size assertion is meaningful.
     let _ = std::fs::remove_dir_all(&expected_path);
 
@@ -335,13 +336,13 @@ async fn e2e_receiver_resumes_partial_download() {
     );
 
     // Re-share the same content. The node id (and thus the full ticket string)
-    // differs per session, but the content hash — which keys the temp dir — is
+    // differs per session, but the content hash — which keys the staging dir — is
     // the same, so the retry targets the preserved partial store.
     let share2 = start_share(source, SendOptions::default(), None, None)
         .await
         .unwrap();
     assert_eq!(
-        receiver_temp_dir(&share2.ticket),
+        receiver_temp_dir(&share2.ticket, &recv_dir),
         expected_path,
         "re-share must map to the same partial-download dir"
     );
