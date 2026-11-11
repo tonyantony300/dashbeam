@@ -1,9 +1,7 @@
 mod common;
 
 use common::TestFixture;
-use engine::{
-    fetch_metadata, start_share, start_share_items, FileMetadata, ReceiveOptions, SendOptions,
-};
+use engine::{fetch_metadata, start_share, start_share_items, FileMetadata, ReceiveOptions};
 
 #[tokio::test]
 async fn e2e_metadata_preview() {
@@ -20,9 +18,14 @@ async fn e2e_metadata_preview() {
         items: None,
     };
 
-    let share = start_share(source, SendOptions::default(), None, Some(metadata.clone()))
-        .await
-        .expect("start_share should succeed");
+    let share = start_share(
+        source,
+        common::send_options_with_addresses(),
+        None,
+        Some(metadata.clone()),
+    )
+    .await
+    .expect("start_share should succeed");
 
     let fetched = fetch_metadata(share.ticket.clone(), ReceiveOptions::default())
         .await
@@ -59,7 +62,7 @@ async fn e2e_metadata_multi_item() {
 
     let share = start_share_items(
         vec![file_a, file_b],
-        SendOptions::default(),
+        common::send_options_with_addresses(),
         &None,
         Some(metadata),
     )

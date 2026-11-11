@@ -1,7 +1,7 @@
 mod common;
 
 use common::{MockEventEmitter, TestFixture};
-use engine::{download, start_share, ReceiveOptions, SendOptions};
+use engine::{download, start_share, ReceiveOptions};
 
 #[tokio::test]
 async fn e2e_filename_conflict_resolved() {
@@ -14,7 +14,7 @@ async fn e2e_filename_conflict_resolved() {
 
     let receiver_emitter = MockEventEmitter::new();
 
-    let share = start_share(source, SendOptions::default(), None, None)
+    let share = start_share(source, common::send_options_with_addresses(), None, None)
         .await
         .expect("start_share should succeed");
 
@@ -59,7 +59,7 @@ async fn e2e_original_file_preserved() {
     std::fs::write(recv_dir.join("keep_me.txt"), b"original data, do not touch")
         .expect("should create original file");
 
-    let share = start_share(source, SendOptions::default(), None, None)
+    let share = start_share(source, common::send_options_with_addresses(), None, None)
         .await
         .expect("start_share should succeed");
 

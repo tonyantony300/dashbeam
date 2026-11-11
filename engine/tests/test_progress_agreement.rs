@@ -5,7 +5,7 @@
 mod common;
 
 use common::{MockEventEmitter, TestFixture};
-use engine::{download, start_share, ReceiveOptions, SendOptions};
+use engine::{download, start_share, ReceiveOptions};
 
 /// `<bytes>:<total>:<speed x1000>`
 fn parse_progress(payload: &str) -> (u64, u64, f64) {
@@ -59,7 +59,7 @@ async fn e2e_sender_and_receiver_report_the_same_transfer_size() {
 
     let share = start_share(
         source_dir,
-        SendOptions::default(),
+        common::send_options_with_addresses(),
         Some(sender_emitter.clone()),
         None,
     )
@@ -117,7 +117,7 @@ async fn e2e_progress_never_moves_backwards() {
 
     let share = start_share(
         source,
-        SendOptions::default(),
+        common::send_options_with_addresses(),
         Some(sender_emitter.clone()),
         None,
     )
@@ -170,7 +170,7 @@ async fn e2e_completion_events_carry_a_wire_duration() {
 
     let share = start_share(
         source,
-        SendOptions::default(),
+        common::send_options_with_addresses(),
         Some(sender_emitter.clone()),
         None,
     )
@@ -232,7 +232,7 @@ async fn e2e_a_small_fast_transfer_still_reports_a_duration() {
 
     let share = start_share(
         source,
-        SendOptions::default(),
+        common::send_options_with_addresses(),
         Some(sender_emitter.clone()),
         None,
     )

@@ -158,3 +158,9 @@ result-*
 
 # flatpak-builder-lint scratch dir (created when linting the manifest locally)
 .flatpak-builder/
+
+# Local desktop control API documentation
+!docs/local-control.md
+
+# Example Python clients
+__pycache__/

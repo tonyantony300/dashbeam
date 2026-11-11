@@ -1,0 +1,12 @@
+{
+	"id": "dashbeamDms",
+	"name": "DashBeam",
+	"description": "Send and receive files with nearby and paired devices",
+	"version": "0.1.0",
+	"author": "DashBeam contributors",
+	"type": "widget",
+	"capabilities": ["dankbar-widget"],
+	"component": "./DashBeamWidget.qml",
+	"icon": "send",
+	"permissions": ["process", "settings_read", "settings_write"]
+}
