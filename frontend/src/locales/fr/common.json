@@ -73,7 +73,7 @@
 		"copyReceiveLink": "Copier le lien de réception",
 		"showReceiveQr": "Afficher le code QR de réception",
 		"receiveQrTitle": "Recevoir un code QR",
-		"scanToReceive": "Recevoir un code QR",
+		"scanToReceive": "Scanner pour recevoir",
 		"shareMessageIntro": "Transfert privé - Envoyé avec DashBeam",
 		"description": "Description (facultatif)",
 		"broadcastMode": {
@@ -563,7 +563,7 @@
 		}
 	},
 	"history": {
-		"title": "Histoire",
+		"title": "Historique",
 		"clearAll": "Tout effacer",
 		"clearAllConfirmTitle": "Effacer tout l'historique?",
 		"clearAllConfirmBody": "Cette opération supprime tous les transferts de cette liste et libère l'espace occupé par les téléchargements incomplets restants. Elle ne supprime pas les fichiers que vous avez déjà reçus.",
