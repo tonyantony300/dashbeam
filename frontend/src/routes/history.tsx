@@ -196,6 +196,7 @@ export function HistoryPage() {
 			console.error(error)
 			toastManager.add({
 				title: t('common:history.row.openFailed'),
+				description: error instanceof Error ? error.message : String(error),
 				type: 'error',
 			})
 		}
