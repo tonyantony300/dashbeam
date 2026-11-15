@@ -1,5 +1,6 @@
 package com.dashbeam.plugin.native_utils
 
+import android.Manifest
 import android.app.Activity
 import android.app.DownloadManager
 import android.app.PendingIntent
@@ -7,6 +8,7 @@ import android.content.ContentResolver
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageInstaller
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Environment
@@ -112,6 +114,8 @@ class NativeUtils(private val activity: Activity) : Plugin(activity) {
         private const val APK_PENDING_URI_KEY = "pending_uri"
         private const val APK_PENDING_AT_KEY = "pending_at"
         private const val APK_PENDING_TTL_MS = 5 * 60 * 1000L
+        private const val APK_INSTALL_HINT =
+            "APK saved. Open it from your file manager to install."
 
         /** Sentinel the Rust side matches to fall back to app-private staging. */
         const val MEDIA_STORE_UNSUPPORTED = "MEDIA_STORE_UNSUPPORTED"
@@ -289,6 +293,7 @@ class NativeUtils(private val activity: Activity) : Plugin(activity) {
         val uriString = args.uri.trim()
         val relativePath = args.relativePath.trim().trim('/')
 
+        var apkFallback = false
         try {
             val candidates = mutableListOf<Intent>()
 
@@ -296,33 +301,41 @@ class NativeUtils(private val activity: Activity) : Plugin(activity) {
                 val uri = Uri.parse(uriString)
                 val mime = resolveViewMimeType(uri)
                 if (isApkTarget(mime)) {
-                    if (canInstallUnknownApps()) {
+                    if (isInstallPermissionDeclared()) {
+                        if (canInstallUnknownApps()) {
+                            clearPendingApkInstall()
+                            installApk(uri, invoke)
+                            return
+                        }
+                        // Android kills us when the per-app install grant changes,
+                        // so persist the target and resume on the next foreground.
+                        storePendingApkInstall(uri)
+                        if (openUnknownSourcesSettings()) {
+                            invoke.reject(
+                                "Grant \"Install unknown apps\" for DashBeam; the install will continue when you return"
+                            )
+                            return
+                        }
                         clearPendingApkInstall()
-                        installApk(uri, invoke)
-                        return
                     }
-                    // Android kills us when the per-app install grant changes,
-                    // so persist the target and resume on the next foreground.
-                    storePendingApkInstall(uri)
-                    if (openUnknownSourcesSettings()) {
-                        invoke.reject(
-                            "Grant \"Install unknown apps\" for DashBeam; the install will continue when you return"
-                        )
-                        return
+                    apkFallback = true
+                } else {
+                    candidates += Intent(Intent.ACTION_VIEW).apply {
+                        setDataAndType(uri, mime)
+                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                     }
-                    clearPendingApkInstall()
-                    // Fall back if the settings screen is unavailable.
-                }
-                candidates += Intent(Intent.ACTION_VIEW).apply {
-                    setDataAndType(uri, mime)
-                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                 }
             }
 
             candidates += folderIntents(relativePath)
             candidates += Intent(DownloadManager.ACTION_VIEW_DOWNLOADS)
 
-            if (!startFirstResolvable(candidates)) {
+            val opened = startFirstResolvable(candidates)
+            if (apkFallback) {
+                invoke.reject(APK_INSTALL_HINT)
+                return
+            }
+            if (!opened) {
                 invoke.reject("No app available to open the downloaded files")
                 return
             }
@@ -454,6 +467,17 @@ class NativeUtils(private val activity: Activity) : Plugin(activity) {
     }
 
     private fun isApkTarget(mime: String): Boolean = mime == APK_MIME_TYPE
+
+    private fun isInstallPermissionDeclared(): Boolean {
+        return try {
+            activity.packageManager.getPackageInfo(
+                activity.packageName,
+                PackageManager.GET_PERMISSIONS,
+            ).requestedPermissions?.contains(Manifest.permission.REQUEST_INSTALL_PACKAGES) == true
+        } catch (_: Exception) {
+            false
+        }
+    }
 
     private fun canInstallUnknownApps(): Boolean {
         return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
