@@ -2,12 +2,16 @@ package com.dashbeam.plugin.native_utils
 
 import android.app.Activity
 import android.app.DownloadManager
+import android.app.PendingIntent
 import android.content.ContentResolver
+import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageInstaller
 import android.net.Uri
 import android.os.Build
 import android.os.Environment
 import android.provider.DocumentsContract
+import android.util.Log
 import android.webkit.WebView
 import androidx.activity.result.ActivityResult
 import androidx.annotation.Keep
@@ -34,6 +38,7 @@ import java.io.InputStream
 import java.io.OutputStream
 import java.net.HttpURLConnection
 import java.net.URL
+import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ConcurrentLinkedQueue
 
@@ -96,6 +101,17 @@ class NativeUtils(private val activity: Activity) : Plugin(activity) {
         private const val RW_PERMISSION_FLAGS =
             Intent.FLAG_GRANT_WRITE_URI_PERMISSION or Intent.FLAG_GRANT_READ_URI_PERMISSION
         private const val SHARE_RECEIVED_EVENT = "shareReceived"
+        private const val LOG_TAG = "NativeUtils"
+        private const val APK_INSTALL_STATUS_ACTION =
+            "com.dashbeam.plugin.native_utils.APK_INSTALL_STATUS"
+        private const val APK_INSTALL_NONCE_EXTRA =
+            "com.dashbeam.plugin.native_utils.APK_INSTALL_NONCE"
+        private const val APK_STATUS_PREFS = "apk_install_status"
+        private const val APK_STATUS_NONCE_PREFIX = "session_"
+        private const val APK_PENDING_PREFS = "apk_install_pending"
+        private const val APK_PENDING_URI_KEY = "pending_uri"
+        private const val APK_PENDING_AT_KEY = "pending_at"
+        private const val APK_PENDING_TTL_MS = 5 * 60 * 1000L
 
         /** Sentinel the Rust side matches to fall back to app-private staging. */
         const val MEDIA_STORE_UNSUPPORTED = "MEDIA_STORE_UNSUPPORTED"
@@ -278,7 +294,25 @@ class NativeUtils(private val activity: Activity) : Plugin(activity) {
 
             if (uriString.isNotEmpty()) {
                 val uri = Uri.parse(uriString)
-                val mime = activity.contentResolver.getType(uri) ?: "*/*"
+                val mime = resolveViewMimeType(uri)
+                if (isApkTarget(mime)) {
+                    if (canInstallUnknownApps()) {
+                        clearPendingApkInstall()
+                        installApk(uri, invoke)
+                        return
+                    }
+                    // Android kills us when the per-app install grant changes,
+                    // so persist the target and resume on the next foreground.
+                    storePendingApkInstall(uri)
+                    if (openUnknownSourcesSettings()) {
+                        invoke.reject(
+                            "Grant \"Install unknown apps\" for DashBeam; the install will continue when you return"
+                        )
+                        return
+                    }
+                    clearPendingApkInstall()
+                    // Fall back if the settings screen is unavailable.
+                }
                 candidates += Intent(Intent.ACTION_VIEW).apply {
                     setDataAndType(uri, mime)
                     addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
@@ -393,6 +427,245 @@ class NativeUtils(private val activity: Activity) : Plugin(activity) {
         return buffer.toString(Charsets.UTF_8.name())
     }
 
+    // Prefer the filename when the resolver returns a generic type.
+    private fun resolveViewMimeType(uri: Uri): String {
+        val resolverType = try {
+            activity.contentResolver.getType(uri)
+        } catch (_: Exception) {
+            null
+        }
+        val displayName = try {
+            resolveDisplayName(activity, uri)
+        } catch (_: Exception) {
+            null
+        }
+        if (isApkFileName(displayName) || isApkFileName(uri.lastPathSegment)) return APK_MIME_TYPE
+
+        if (resolverType != null && !isGenericMimeType(resolverType)) return resolverType
+
+        val candidate = displayName?.takeIf { it.isNotBlank() } ?: uri.lastPathSegment
+        if (candidate != null) {
+            val extMime = mimeTypeForFileName(candidate)
+            if (!isGenericMimeType(extMime)) return extMime
+            if (resolverType != null) return resolverType
+            return extMime
+        }
+        return resolverType ?: "*/*"
+    }
+
+    private fun isApkTarget(mime: String): Boolean = mime == APK_MIME_TYPE
+
+    private fun canInstallUnknownApps(): Boolean {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            activity.packageManager.canRequestPackageInstalls()
+        } else {
+            true
+        }
+    }
+
+    private fun openUnknownSourcesSettings(): Boolean {
+        return try {
+            val settingsIntent = Intent(
+                android.provider.Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                Uri.parse("package:${activity.packageName}"),
+            ).apply { addFlags(Intent.FLAG_ACTIVITY_NEW_TASK) }
+            activity.startActivity(settingsIntent)
+            true
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    private fun apkPendingPreferences() =
+        activity.getSharedPreferences(APK_PENDING_PREFS, Context.MODE_PRIVATE)
+
+    private fun storePendingApkInstall(uri: Uri) {
+        val stored = apkPendingPreferences().edit()
+            .putString(APK_PENDING_URI_KEY, uri.toString())
+            .putLong(APK_PENDING_AT_KEY, System.currentTimeMillis())
+            .commit()
+        if (!stored) Log.w(LOG_TAG, "Failed to persist the pending APK install")
+    }
+
+    private fun clearPendingApkInstall() {
+        apkPendingPreferences().edit()
+            .remove(APK_PENDING_URI_KEY)
+            .remove(APK_PENDING_AT_KEY)
+            .commit()
+    }
+
+    /**
+     * Resume an install interrupted by the install-grant change. Runs from
+     * onResume, or load() when cold start beats plugin setup.
+     */
+    private fun resumePendingApkInstall() {
+        val prefs = apkPendingPreferences()
+        val uriString = prefs.getString(APK_PENDING_URI_KEY, null)
+        val storedAt = prefs.getLong(APK_PENDING_AT_KEY, 0L)
+        if (uriString.isNullOrEmpty() || storedAt <= 0L) return
+
+        val age = System.currentTimeMillis() - storedAt
+        // Drop stale or abandoned requests instead of retrying later.
+        clearPendingApkInstall()
+        if (age < 0 || age > APK_PENDING_TTL_MS) return
+        if (!canInstallUnknownApps()) return
+
+        installApk(Uri.parse(uriString), null)
+    }
+
+    private fun installApk(uri: Uri, invoke: Invoke?) {
+        scope.launch {
+            var installer: PackageInstaller? = null
+            var sessionId = -1
+            var session: PackageInstaller.Session? = null
+            var committed = false
+            try {
+                val packageInstaller = activity.packageManager.packageInstaller
+                installer = packageInstaller
+
+                val params = PackageInstaller.SessionParams(
+                    PackageInstaller.SessionParams.MODE_FULL_INSTALL
+                )
+
+                sessionId = packageInstaller.createSession(params)
+                val openedSession = packageInstaller.openSession(sessionId)
+                session = openedSession
+
+                activity.contentResolver.openInputStream(uri)?.use { input ->
+                    openedSession.openWrite("base.apk", 0L, -1L).use { output ->
+                        input.copyTo(output, BUFFER_SIZE)
+                        openedSession.fsync(output)
+                    }
+                } ?: throw IOException("Cannot open stream for: $uri")
+
+                val nonce = UUID.randomUUID().toString()
+                storeApkStatusNonce(sessionId, nonce)
+
+                // Activity PendingIntent keeps the app foreground for the install UI.
+                val statusIntent = Intent(activity, activity.javaClass)
+                    .setAction(APK_INSTALL_STATUS_ACTION)
+                    .putExtra(APK_INSTALL_NONCE_EXTRA, nonce)
+                val statusFlags = PendingIntent.FLAG_UPDATE_CURRENT or
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                        // Allow PackageInstaller to add the status extras.
+                        PendingIntent.FLAG_MUTABLE
+                    } else {
+                        0
+                    }
+                val statusReceiver = PendingIntent.getActivity(
+                    activity,
+                    sessionId,
+                    statusIntent,
+                    statusFlags,
+                )
+
+                openedSession.commit(statusReceiver.intentSender)
+                committed = true
+                invoke?.resolve()
+            } catch (e: Exception) {
+                if (!committed) {
+                    if (sessionId >= 0) {
+                        try {
+                            removeApkStatusNonce(sessionId)
+                        } catch (_: Exception) {
+                        }
+                    }
+                    if (session != null) {
+                        try {
+                            session.abandon()
+                        } catch (_: Exception) {
+                        }
+                    } else if (sessionId >= 0) {
+                        try {
+                            installer?.abandonSession(sessionId)
+                        } catch (_: Exception) {
+                        }
+                    }
+                }
+                invoke?.reject(e.message ?: "Failed to start the package installer")
+            } finally {
+                try {
+                    session?.close()
+                } catch (_: Exception) {
+                }
+            }
+        }
+    }
+
+    private fun apkStatusPreferences() =
+        activity.getSharedPreferences(APK_STATUS_PREFS, Context.MODE_PRIVATE)
+
+    private fun apkStatusNonceKey(sessionId: Int) = "$APK_STATUS_NONCE_PREFIX$sessionId"
+
+    private fun storeApkStatusNonce(sessionId: Int, nonce: String) {
+        // Persist before commit: the process may die before the status arrives.
+        val stored = apkStatusPreferences().edit()
+            .putString(apkStatusNonceKey(sessionId), nonce)
+            .commit()
+        if (!stored) throw IOException("Failed to persist the APK install status")
+    }
+
+    private fun apkStatusNonce(sessionId: Int): String? =
+        apkStatusPreferences().getString(apkStatusNonceKey(sessionId), null)
+
+    private fun removeApkStatusNonce(sessionId: Int) {
+        apkStatusPreferences().edit()
+            .remove(apkStatusNonceKey(sessionId))
+            .apply()
+    }
+
+    /** Start the installer confirmation requested by PackageInstaller. */
+    private fun handleApkInstallStatus(intent: Intent?): Boolean {
+        if (intent == null || intent.action != APK_INSTALL_STATUS_ACTION) return false
+
+        val sessionId = intent.getIntExtra(PackageInstaller.EXTRA_SESSION_ID, -1)
+        val nonce = intent.getStringExtra(APK_INSTALL_NONCE_EXTRA)
+        val storedNonce = if (sessionId >= 0) apkStatusNonce(sessionId) else null
+        if (sessionId < 0 || nonce.isNullOrEmpty() || storedNonce == null || storedNonce != nonce) {
+            Log.w(LOG_TAG, "Ignoring APK install status without a valid session nonce")
+            intent.action = null
+            return true
+        }
+        // Prevent reprocessing.
+        intent.action = null
+
+        val status = intent.getIntExtra(
+            PackageInstaller.EXTRA_STATUS,
+            PackageInstaller.STATUS_FAILURE,
+        )
+        if (status != PackageInstaller.STATUS_PENDING_USER_ACTION) {
+            removeApkStatusNonce(sessionId)
+            val message = intent.getStringExtra(PackageInstaller.EXTRA_STATUS_MESSAGE)
+            if (status == PackageInstaller.STATUS_FAILURE) {
+                Log.w(LOG_TAG, "APK install failed: $message")
+            } else {
+                Log.i(LOG_TAG, "APK install status $status: $message")
+            }
+            return true
+        }
+
+        val confirmIntent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            intent.getParcelableExtra(Intent.EXTRA_INTENT, Intent::class.java)
+        } else {
+            @Suppress("DEPRECATION")
+            intent.getParcelableExtra(Intent.EXTRA_INTENT) as? Intent
+        } ?: return true
+
+        if (confirmIntent.component?.packageName == activity.packageName) {
+            Log.w(LOG_TAG, "Refusing installer confirmation targeted at DashBeam")
+            return true
+        }
+
+        confirmIntent.flags = Intent.FLAG_ACTIVITY_NEW_TASK
+        confirmIntent.clipData = null
+        try {
+            activity.startActivity(confirmIntent)
+        } catch (_: Exception) {
+            // The session will time out.
+        }
+        return true
+    }
+
     /**
      * `ACTION_VIEW` intents pointing at a storage folder, most specific first.
      * Two document-URI shapes, because file managers disagree on which they
@@ -478,6 +751,13 @@ class NativeUtils(private val activity: Activity) : Plugin(activity) {
 
     override fun load(webView: WebView) {
         super.load(webView)
+        // PackageInstaller may have relaunched us with a commit result.
+        val coldStartIntent = activity.intent
+        webView.post {
+            handleApkInstallStatus(coldStartIntent)
+            // Cold start after Settings killed us for the install grant.
+            resumePendingApkInstall()
+        }
         // Cold start: capture share URI before / as the frontend mounts.
         // Skip wiping file_cache when a share is pending so cleanup cannot race the copy.
         val shareUris = takeShareUris(activity.intent)
@@ -499,6 +779,8 @@ class NativeUtils(private val activity: Activity) : Plugin(activity) {
         // Without this, activity.intent stays the old MAIN launcher intent under singleTask.
         activity.intent = intent
 
+        if (handleApkInstallStatus(intent)) return
+
         val uris = takeShareUris(intent) ?: return
         pendingShareBatches.add(uris)
         trigger(SHARE_RECEIVED_EVENT, JSObject())
@@ -506,6 +788,7 @@ class NativeUtils(private val activity: Activity) : Plugin(activity) {
 
     override fun onResume() {
         super.onResume()
+        resumePendingApkInstall()
         // Safety net: if the frontend missed the first event (listener not ready yet),
         // re-advertise any still-unconsumed share when we come to the foreground.
         val uris = takeShareUris(activity.intent) ?: return
