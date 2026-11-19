@@ -893,7 +893,7 @@ export function useReceiver(): UseReceiverReturn {
 			console.error('Failed to open download folder:', error)
 			showAlert(
 				t('common:errors.openFolderFailed'),
-				`${t('common:errors.openFolderFailedDesc')}: ${error}`,
+				error instanceof Error ? error.message : String(error),
 				'error'
 			)
 		}
