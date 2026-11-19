@@ -507,7 +507,18 @@
 		"cancel": "Annuler",
 		"dismiss": "Ignorer",
 		"download": "Télécharger",
-		"sideloadHint": "Pour l'installer, téléchargez le nouveau fichier APK depuis la page de mise à jour."
+		"sideloadHint": "Pour l'installer, téléchargez le nouveau fichier APK depuis la page de mise à jour.",
+		"restartToUpdate": "Redémarrer pour mettre à jour",
+		"updateFailedReason": "Échec de la mise à jour : {{reason}}",
+		"downloadManually": "Télécharger manuellement",
+		"whatsNew": "Quoi de neuf ?",
+		"whatsNewTitle": "Nouveautés de la version {{version}}",
+		"whatsNewLoading": "Chargement des notes de mise à jour…",
+		"whatsNewUnavailable": "Les notes de mise à jour n'ont pas pu être chargées. Vous pouvez les consulter sur GitHub.",
+		"viewOnGithub": "Consulter sur GitHub",
+		"close": "Fermer",
+		"currentVersion": "Version {{version}}",
+		"lastChecked": "Dernière vérification {{time}}"
 	},
 	"android": {
 		"preparingFile": "Préparation du fichier..."
