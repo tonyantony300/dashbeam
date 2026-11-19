@@ -42,7 +42,7 @@
 			],
 			"csp": {
 				"default-src": "'self' customprotocol:",
-				"connect-src": "ipc: http://ipc.localhost",
+				"connect-src": "ipc: http://ipc.localhost https://api.github.com",
 				"font-src": "'self' blob: data: https:",
 				"img-src": "'self' blob: data:",
 				"style-src": "'unsafe-inline' 'self'",
@@ -50,7 +50,7 @@
 			},
 			"devCsp": {
 				"default-src": "'self' customprotocol: http://localhost:* http://127.0.0.1:* ws://localhost:* ws://127.0.0.1:*",
-				"connect-src": "ipc: http://ipc.localhost http://localhost:* http://127.0.0.1:* ws://localhost:* ws://127.0.0.1:*",
+				"connect-src": "ipc: http://ipc.localhost http://localhost:* http://127.0.0.1:* ws://localhost:* ws://127.0.0.1:* https://api.github.com",
 				"font-src": "'self' blob: data: https:",
 				"img-src": "'self' blob: data:",
 				"style-src": "'unsafe-inline' 'self'",
