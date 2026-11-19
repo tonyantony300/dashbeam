@@ -5,7 +5,7 @@ import {
 	type Options as NotificationOptions,
 } from '@tauri-apps/plugin-notification'
 import { resolveResource } from '@tauri-apps/api/path'
-import { IS_TAURI, IS_WINDOWS, IS_ANDROID, IS_DESKTOP } from './platform'
+import { IS_TAURI, IS_WINDOWS, IS_MOBILE, IS_DESKTOP } from './platform'
 import { invoke } from './platform-api'
 import { useAppSettingStore } from '../store/app-setting'
 import { shouldNotify } from './notification-gate'
@@ -37,11 +37,11 @@ async function getNotificationIconPath(): Promise<string | undefined> {
 
 /**
  * Whether the user is looking at the app. Desktop reads the real window state;
- * Android uses page visibility, since its focus APIs are unreliable and the
- * webview is the app.
+ * mobile uses page visibility, since the webview is the app and Android's focus
+ * APIs are unreliable.
  */
 async function isAppInForeground(): Promise<boolean> {
-	if (IS_ANDROID) {
+	if (IS_MOBILE) {
 		return (
 			typeof document !== 'undefined' && document.visibilityState === 'visible'
 		)

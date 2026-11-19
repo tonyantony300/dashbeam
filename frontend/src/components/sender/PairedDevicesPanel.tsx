@@ -10,7 +10,7 @@ import {
 	type PairedDevice,
 	sortPairedDevicesForList,
 } from '@/lib/pairing-api'
-import { IS_PAIRING_CAPABLE } from '@/lib/platform'
+import { IS_NEARBY_CAPABLE } from '@/lib/platform'
 import { listen } from '@/lib/platform-api'
 import { cn } from '@/lib/utils'
 import {
@@ -76,7 +76,7 @@ export function PairedDevicesPanel({
 	}, [isOpen])
 
 	useEffect(() => {
-		if (!IS_PAIRING_CAPABLE || !isOpen) return
+		if (!IS_NEARBY_CAPABLE || !isOpen) return
 
 		let disposed = false
 		let unlistenNearby: (() => void) | undefined
@@ -254,7 +254,7 @@ export function PairedDevicesPanel({
 		</ul>
 	)
 
-	const showNearbySection = IS_PAIRING_CAPABLE && Boolean(onInviteNearbyDevice)
+	const showNearbySection = IS_NEARBY_CAPABLE && Boolean(onInviteNearbyDevice)
 
 	return (
 		<div

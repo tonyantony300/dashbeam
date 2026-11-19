@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <title>DashBeam app icon (full-bleed, unrounded)</title>
+  <!-- Source for Assets.xcassets/AppIcon.appiconset/AppIcon-1024.png. iOS applies its own corner mask; the exported PNG must be opaque (no alpha). -->
+
+  <rect width="1024" height="1024" fill="#17181a"/>
+  <circle cx="512" cy="512" r="400" fill="#173727"/>
+  <circle cx="512" cy="512" r="235" fill="#008445"/>
+  <circle cx="512" cy="512" r="67" fill="#00c660"/>
+</svg>
