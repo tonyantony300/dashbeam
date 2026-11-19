@@ -1,7 +1,7 @@
 export type { UnlistenFn } from '@tauri-apps/api/event'
 
 import type { UnlistenFn } from '@tauri-apps/api/event'
-import { IS_TAURI, IS_WEB } from './platform'
+import { IS_IOS, IS_TAURI, IS_WEB } from './platform'
 import type { RelayConfigArg } from './relay-config'
 import {
 	ensureWasmBridge,
@@ -443,6 +443,12 @@ export async function saveDialog(options: {
 }
 
 export async function downloadDir(): Promise<string> {
+	// iOS has no shared Downloads folder; the app's Documents folder is what
+	// the Files app shows under "On My iPhone".
+	if (IS_IOS) {
+		const { documentDir } = await import('@tauri-apps/api/path')
+		return documentDir()
+	}
 	if (IS_TAURI) {
 		const { downloadDir: tauriDownloadDir } = await import(
 			'@tauri-apps/api/path'
