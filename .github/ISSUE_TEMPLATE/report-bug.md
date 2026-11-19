@@ -3,7 +3,8 @@ name: Report a bug
 about: Describe something that isn't working correctly
 title: ''
 labels:
-  - 'type: bug'
+  - bug
+  - 'status: needs triage'
 assignees: ''
 ---
 

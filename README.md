@@ -63,6 +63,7 @@ Why rely on WeTransfer, Dropbox, or Google Drive when you can reliably and easil
 - **Always reachable** - Background tray/service, notifications, start at login
 - **Lightweight & free** - Small installs; open source, no limits
 
+<a href="https://github.com/sponsors/tonyantony300"><img src="https://img.shields.io/badge/sponsor-30363D?style=for-the-badge&logo=GitHub-Sponsors&logoColor=#EA4AAA" alt="Sponsor" height="64"></a>&nbsp;<a href="https://buymeacoffee.com/tny_antny"><img src="https://img.shields.io/badge/Buy%20Me%20Coffee-FF5A5F?style=for-the-badge&logo=coffee&logoColor=FFFFFF" alt="Buy Me Coffee" height="64"></a>&nbsp;<a href="https://ko-fi.com/tonyantony"><img src="https://img.shields.io/badge/Ko--fi-29ABE0?style=for-the-badge&logo=ko-fi&logoColor=FFFFFF" alt="Ko-fi" height="64"></a>
 
 
 ## Real-world stats
@@ -166,7 +167,7 @@ While sharing: **QR** for a camera scan, **Share** for the system sheet, **Copy*
 | Networking | QUIC via Iroh | Unknown | HTTPS/REST over TCP | encrypted TCP | WebRTC/DTLS (SCTP) |
 | Works over the internet | ✅ | ✅ | LAN only | ✅ | ✅ |
 | Saturates gigabit connections | ✅ | ✅ | LAN only | ✅ | ❌ (SCTP/browser ceiling) |
-| Discover devices on LAN | ✅ | ❌ | ✅ | ❌ | ❌ |
+| Discover devices on LAN | ✅ | ❌ | ✅ | ❌ | ✅ |
 | Persistent paired devices | ✅  | ✅ (account) | ❌ | ❌ | ✅ |
 | Send folders | ✅ | ✅ | ✅ | ✅ | ✅ (CLI only, not in browser) |
 | Resumable transfers | ✅ | ✅ | ❌ | ❌ | ❌ |
@@ -290,8 +291,6 @@ AGPL-3.0
 ## Privacy Policy
 
 See [PRIVACY.md](PRIVACY.md) for information about how DashBeam handles your data and privacy.
-
-[![Sponsor](https://img.shields.io/badge/sponsor-30363D?style=for-the-badge&logo=GitHub-Sponsors&logoColor=#EA4AAA)](https://github.com/sponsors/tonyantony300) [![Buy Me Coffee](https://img.shields.io/badge/Buy%20Me%20Coffee-FF5A5F?style=for-the-badge&logo=coffee&logoColor=FFFFFF)](https://buymeacoffee.com/tny_antny)
 
 
 ## Contributors
