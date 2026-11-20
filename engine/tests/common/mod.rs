@@ -365,3 +365,14 @@ pub async fn spawn_paired_nodes() -> (TestNode, TestNode) {
 
     (host, joiner)
 }
+
+/// Same-machine transfer tests should carry the provider's addresses in the
+/// ticket. ID-only production defaults require public DNS publication and
+/// lookup to complete before a receiver can connect, which is unrelated to
+/// event, cleanup, metadata, and payload assertions in these tests.
+pub fn send_options_with_addresses() -> engine::SendOptions {
+    engine::SendOptions {
+        ticket_type: engine::AddrInfoOptions::RelayAndAddresses,
+        ..Default::default()
+    }
+}

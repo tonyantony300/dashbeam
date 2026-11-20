@@ -1,0 +1,14 @@
+[Unit]
+Description=DashBeam local control for DankMaterialShell
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+Environment=DASHBEAM_LOCAL_CONTROL=1
+ExecStart=/usr/bin/DashBeam --hidden
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=graphical-session.target
