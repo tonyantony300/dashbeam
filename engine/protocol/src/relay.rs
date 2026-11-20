@@ -1,5 +1,5 @@
 use crate::time_compat::{sleep, timeout, Duration, Instant};
-use crate::types::{get_or_create_secret, RelayModeOption};
+use crate::types::{probe_secret_key, RelayModeOption};
 use iroh::{endpoint::presets, Endpoint, Watcher};
 use serde::{Deserialize, Serialize};
 use std::net::IpAddr;
@@ -174,7 +174,7 @@ async fn probe_relay_mode(relay_mode: RelayModeOption) -> Result<Option<String>,
         return Ok(None);
     }
 
-    let secret_key = get_or_create_secret().map_err(|e| e.to_string())?;
+    let secret_key = probe_secret_key();
     let custom_infra = matches!(relay_mode, RelayModeOption::Custom { .. });
     let endpoint =
         crate::tls_config::with_system_ca_if_custom(Endpoint::builder(presets::Minimal), custom_infra)
@@ -357,7 +357,7 @@ pub async fn verify_relays(relay: RelayConfigArg) -> Result<VerifyRelaysResponse
         return Err("Relay verification requires default or custom relay mode".to_string());
     }
 
-    let secret_key = get_or_create_secret().map_err(|e| e.to_string())?;
+    let secret_key = probe_secret_key();
     let custom_infra = matches!(relay_mode, RelayModeOption::Custom { .. });
 
     let endpoint =

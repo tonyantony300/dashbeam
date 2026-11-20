@@ -1,4 +1,4 @@
-use crate::types::{get_or_create_secret, DiscoveryModeOption};
+use crate::types::DiscoveryModeOption;
 use serde::{Deserialize, Serialize};
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -189,7 +189,7 @@ async fn verify_discovery_within(
 
     // Fresh key per probe: the record is never looked up by anyone else. The
     // user-data tag tells a server operator what these records are.
-    let secret_key = get_or_create_secret().map_err(|e| e.to_string())?;
+    let secret_key = crate::types::probe_secret_key();
     let probe_tag: UserData = "dashbeam-discovery-check"
         .parse()
         .map_err(|e| format!("Failed to build probe record: {e}"))?;

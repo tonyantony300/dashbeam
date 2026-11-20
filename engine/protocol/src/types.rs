@@ -222,3 +222,34 @@ pub fn get_or_create_secret() -> anyhow::Result<iroh::SecretKey> {
 pub fn set_wasm_secret_key(key: iroh::SecretKey) {
     wasm_secret::set(key);
 }
+
+/// Key for a connectivity probe (relay/discovery "Test connection").
+///
+/// Never the configured identity: a probe under the same id would replace
+/// that identity's pkarr record or kick its live relay connection.
+pub fn probe_secret_key() -> iroh::SecretKey {
+    iroh::SecretKey::generate()
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod probe_key_tests {
+    use super::*;
+
+    #[test]
+    fn probe_key_ignores_configured_identity() {
+        let configured = iroh::SecretKey::generate();
+        let hex: String = configured
+            .to_bytes()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        // Sanity: the configured key round-trips through the env var.
+        std::env::set_var("IROH_SECRET", &hex);
+        let via_env = get_or_create_secret().unwrap().public();
+        let probe = probe_secret_key().public();
+        std::env::remove_var("IROH_SECRET");
+
+        assert_eq!(via_env, configured.public());
+        assert_ne!(probe, configured.public());
+    }
+}

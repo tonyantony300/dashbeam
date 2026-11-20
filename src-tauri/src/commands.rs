@@ -1322,10 +1322,27 @@ async fn collect_preview_items(paths: &[PathBuf]) -> Result<Vec<FilePreviewItem>
     Ok(items)
 }
 
+/// A user-entered URL safe to log: userinfo, query and fragment can carry secrets.
+fn log_safe_url(raw: &str) -> String {
+    let Ok(mut url) = tauri::Url::parse(raw.trim()) else {
+        return "<unparseable URL>".to_string();
+    };
+    let _ = url.set_username("");
+    let _ = url.set_password(None);
+    url.set_query(None);
+    url.set_fragment(None);
+    url.to_string()
+}
+
 /// Verify connectivity to configured relay servers.
 #[tauri::command]
 pub async fn verify_relays(relay: RelayConfigArg) -> Result<VerifyRelaysResponse, String> {
-    let urls = relay.urls.join(", ");
+    let urls = relay
+        .urls
+        .iter()
+        .map(|u| log_safe_url(u))
+        .collect::<Vec<_>>()
+        .join(", ");
     engine_verify_relays(relay).await.inspect_err(|error| {
         // The UI only shows "could not connect"; keep the cause for diagnostics.
         tracing::warn!(target: "dashbeam::_events::relay::verify_failed", %urls, %error);
@@ -1337,7 +1354,7 @@ pub async fn verify_relays(relay: RelayConfigArg) -> Result<VerifyRelaysResponse
 pub async fn verify_discovery(
     discovery: DiscoveryConfigArg,
 ) -> Result<VerifyDiscoveryResponse, String> {
-    let url = discovery.pkarr_relay_url.clone().unwrap_or_default();
+    let url = log_safe_url(discovery.pkarr_relay_url.as_deref().unwrap_or_default());
     engine_verify_discovery(discovery)
         .await
         .inspect_err(|error| {
@@ -2140,6 +2157,28 @@ mod tests {
     use std::fs;
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn log_safe_url_drops_credentials_query_and_fragment() {
+        assert_eq!(
+            log_safe_url("https://user:hunter2@relay.example.com:8443/path?token=abc#frag"),
+            "https://relay.example.com:8443/path"
+        );
+    }
+
+    #[test]
+    fn log_safe_url_keeps_a_plain_url() {
+        assert_eq!(
+            log_safe_url("https://relay.example.com/"),
+            "https://relay.example.com/"
+        );
+    }
+
+    #[test]
+    fn log_safe_url_never_echoes_unparseable_input() {
+        let logged = log_safe_url("https://user:hunter2@relay example.com");
+        assert!(!logged.contains("hunter2"), "leaked: {logged}");
+    }
 
     fn unique_temp_file(name_prefix: &str) -> PathBuf {
         let ts = SystemTime::now()
