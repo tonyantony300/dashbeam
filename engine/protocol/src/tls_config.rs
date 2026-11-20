@@ -42,13 +42,28 @@ pub fn with_system_ca_if_custom(builder: Builder, custom_infra: bool) -> Builder
 
 #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
 fn apply_dot_tolerant_system_ca(builder: Builder) -> Builder {
+    builder.ca_tls_config(dot_tolerant_system_ca())
+}
+
+#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+fn dot_tolerant_system_ca() -> iroh::tls::CaTlsConfig {
     use iroh::tls::CaTlsConfig;
 
-    let ca = CaTlsConfig::custom_server_cert_verifier(Arc::new(|provider| {
+    CaTlsConfig::custom_server_cert_verifier(Arc::new(|provider| {
         let inner = CaTlsConfig::system().server_cert_verifier(provider)?;
         Ok(Arc::new(DotTolerant(inner)) as Arc<dyn rustls::client::danger::ServerCertVerifier>)
-    }));
-    builder.ca_tls_config(ca)
+    }))
+}
+
+/// rustls client config for self-hosted HTTPS infra, with the same trust
+/// [`with_system_ca_if_custom`] gives endpoints (embedded roots on Android).
+#[cfg(not(target_arch = "wasm32"))]
+pub fn custom_infra_client_config() -> std::io::Result<rustls::ClientConfig> {
+    #[cfg(not(target_os = "android"))]
+    let ca = dot_tolerant_system_ca();
+    #[cfg(target_os = "android")]
+    let ca = iroh::tls::CaTlsConfig::default();
+    ca.client_config(iroh::tls::default_provider())
 }
 
 /// Strips a trailing DNS root label before delegating to the inner verifier.

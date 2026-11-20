@@ -25,10 +25,11 @@ pub use protocol::identity::unix_now_ms;
 /// Shared protocol helpers not re-exported by the platform crates.
 pub use protocol::{
     allows_unpaired_control, build_relay_mode, download_to_store, get_relay_status,
-    pairing_host_is_persistent, relay_fallback_policy, resolve_relay_mode_with_fallback,
-    run_share_session, sanitize_folder_name, should_answer_identity, should_publish_mdns,
-    should_run_background_presence, sign_challenge, unpaired_message_allowed, verify_challenge,
-    verify_relays, ControlMessage, Discoverability, DownloadToStoreResult, PairedDevice,
-    PairingStatus, PairingTicket, RelayConfigArg, RelayFallbackPolicy, RelayStatusResponse,
-    ShareSessionOutcome, VerifyRelaysResponse, METADATA_ALPN,
+    pairing_host_is_persistent, relay_fallback_policy, resolve_node_relay_mode,
+    resolve_relay_mode_with_fallback, run_share_session, sanitize_folder_name,
+    should_answer_identity, should_publish_mdns, should_run_background_presence, sign_challenge,
+    unpaired_message_allowed, verify_challenge, verify_relays, ControlMessage, Discoverability,
+    DownloadToStoreResult, PairedDevice, PairingStatus, PairingTicket, RelayConfigArg,
+    RelayFallbackPolicy, RelayStatusResponse, ShareSessionOutcome, VerifyRelaysResponse,
+    METADATA_ALPN,
 };
