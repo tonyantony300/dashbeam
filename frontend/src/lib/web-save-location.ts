@@ -113,6 +113,15 @@ export async function pickDownloadDirectory(): Promise<string | null> {
 		if (error instanceof DOMException && error.name === 'AbortError') {
 			return null
 		}
+		// A repeat tap while the picker is open (common on mobile Chromium);
+		// the open picker still applies its own result.
+		if (
+			error instanceof DOMException &&
+			error.name === 'NotAllowedError' &&
+			/already active/i.test(error.message)
+		) {
+			return null
+		}
 		throw error
 	}
 }
