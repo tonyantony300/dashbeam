@@ -361,6 +361,9 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
           RELEASE_ID: ${{ needs.prepare-release.outputs.release_id }}
+          # Repacking invalidates tauri-action's signature, so the script re-signs.
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: node scripts/patch-linux-deb.js
 
       - name: Verify and upload Linux AppImage update sidecar
@@ -614,8 +617,20 @@ jobs:
     permissions:
       contents: write
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 15
     steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
+
+      # The patched .deb was re-uploaded under a new asset id after latest.json was
+      # written. Repoint those entries, then fail the release if any updater entry
+      # 404s or does not verify against the updater public key.
+      - name: Repoint and verify updater manifest
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_ID: ${{ needs.prepare-release.outputs.release_id }}
+        run: node scripts/finalize-updater-manifest.js
+
       - name: Leave release as draft for manual review
         shell: bash
         env:
