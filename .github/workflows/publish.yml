@@ -160,7 +160,7 @@ jobs:
         if: contains(matrix.platform, 'ubuntu')
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf xdg-utils clang zsync
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf xdg-utils clang zsync rpm
 
       # Exclude libwayland-client from AppImage so Wayland hosts load their own
       # copy (fixes EGL_BAD_PARAMETER on Arch/Tumbleweed). Requires a linuxdeploy
@@ -316,6 +316,22 @@ jobs:
             echo "APPIMAGE_EXPECTED_SIDECAR=DashBeam_${VERSION}_${APPIMAGE_RELEASE_ARCH}.AppImage.zsync"
           } >> "$GITHUB_ENV"
 
+      # Without the key Tauri silently builds an unsigned RPM, which rpm 6
+      # (Fedora 45+) refuses to install. Key: a dedicated sign-only RSA key
+      # (`gpg --quick-gen-key "DashBeam RPM Signing" rsa4096 sign 0`), stored as
+      # `gpg --armor --export-secret-keys`. Keep it stable across releases.
+      - name: Require RPM signing key (ubuntu only)
+        if: contains(matrix.platform, 'ubuntu')
+        shell: bash
+        env:
+          RPM_SIGNING_KEY: ${{ secrets.RPM_SIGNING_KEY }}
+          RPM_SIGNING_KEY_PASSPHRASE: ${{ secrets.RPM_SIGNING_KEY_PASSPHRASE }}
+        run: |
+          if [ -z "$RPM_SIGNING_KEY" ] || [ -z "$RPM_SIGNING_KEY_PASSPHRASE" ]; then
+            echo "ERROR: RPM_SIGNING_KEY and RPM_SIGNING_KEY_PASSPHRASE secrets are required"
+            exit 1
+          fi
+
       # Retries only help transient latest.json upload races. Keep low — each attempt
       # re-runs the full tauri build (wasm + frontend + rust + bundles), which turned a
       # deterministic WiX/MSI failure into ~40+ minutes of useless rebuilds.
@@ -332,6 +348,9 @@ jobs:
           TAURI_SIGNING_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_KEY_PASSWORD }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           TAURI_LINUX_AYATANA_APPINDICATOR: ${{ contains(matrix.platform, 'ubuntu') && '1' || '' }}
+          # ASCII-armored secret key; the bundler signs the RPM in place.
+          TAURI_SIGNING_RPM_KEY: ${{ contains(matrix.platform, 'ubuntu') && secrets.RPM_SIGNING_KEY || '' }}
+          TAURI_SIGNING_RPM_KEY_PASSPHRASE: ${{ contains(matrix.platform, 'ubuntu') && secrets.RPM_SIGNING_KEY_PASSPHRASE || '' }}
         with:
           projectPath: ./src-tauri
           tauriScript: 'pnpm run tauri'
@@ -342,6 +361,50 @@ jobs:
           prerelease: false
           uploadUpdaterJson: true
           retryAttempts: 2
+
+      # The public key is derived from the signing secret, so the published key
+      # always matches what signed the RPM. Users import it with `rpm --import`.
+      - name: Verify RPM signature and upload public key (ubuntu only)
+        if: contains(matrix.platform, 'ubuntu')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RPM_SIGNING_KEY: ${{ secrets.RPM_SIGNING_KEY }}
+        run: |
+          set -euo pipefail
+          export GH_REPO="$GITHUB_REPOSITORY"
+          WORK="$(mktemp -d)"
+          trap 'rm -rf "$WORK"' EXIT
+          export GNUPGHOME="$WORK/gnupg"
+          mkdir -m 700 "$GNUPGHOME"
+          printf '%s\n' "$RPM_SIGNING_KEY" | gpg --batch --quiet --import
+          if [ "$(gpg --batch --with-colons --list-keys | grep -c '^pub:')" -ne 1 ]; then
+            echo "ERROR: RPM_SIGNING_KEY must contain exactly one key"
+            exit 1
+          fi
+          PUBKEY="$WORK/RPM-GPG-KEY-dashbeam"
+          gpg --batch --armor --export > "$PUBKEY"
+
+          RPMDB="$WORK/rpmdb"
+          rpm --dbpath "$RPMDB" --initdb
+          rpmkeys --dbpath "$RPMDB" --import "$PUBKEY"
+
+          shopt -s nullglob
+          RPMS=(src-tauri/target/release/bundle/rpm/*.rpm)
+          if [ "${#RPMS[@]}" -eq 0 ]; then
+            echo "ERROR: no RPM found in src-tauri/target/release/bundle/rpm"
+            exit 1
+          fi
+          for RPM in "${RPMS[@]}"; do
+            OUT="$(rpmkeys --dbpath "$RPMDB" --checksig "$RPM" 2>&1 || true)"
+            echo "$OUT"
+            if ! grep -q 'signatures OK' <<< "$OUT"; then
+              echo "ERROR: $RPM is not signed by the release key"
+              exit 1
+            fi
+          done
+
+          gh release upload "$GITHUB_REF_NAME" "$PUBKEY" --clobber
 
       - name: Package Windows portable ZIP
         if: matrix.platform == 'windows-latest'
