@@ -115,21 +115,101 @@ test('progressRatio never exceeds 1', () => {
 	assert.equal(store.progressRatio(), 1)
 })
 
-test('downloadFinished moves to installing', () => {
+// Downloading must not install: on Windows the installer quits the app, so
+// it only starts once the user has agreed to restart.
+test('downloadFinished moves to ready without installing', () => {
 	const store = createUpdaterStore()
 	store.updateFound('1.4.2')
 	store.startDownload()
 	store.downloadFinished()
+	assert.equal(store.phase(), 'ready')
+})
+
+test('startInstall moves a ready update to installing', () => {
+	const store = createUpdaterStore()
+	store.updateFound('1.4.2')
+	store.startDownload()
+	store.downloadFinished()
+	assert.equal(store.startInstall(), true)
 	assert.equal(store.phase(), 'installing')
 })
 
-test('installFinished moves to ready', () => {
+test('startInstall is refused before the download has finished', () => {
+	const store = createUpdaterStore()
+	store.updateFound('1.4.2')
+	assert.equal(store.startInstall(), false)
+	store.startDownload()
+	assert.equal(store.startInstall(), false)
+	assert.equal(store.phase(), 'downloading')
+})
+
+test('startInstall is refused while an install is already running', () => {
 	const store = createUpdaterStore()
 	store.updateFound('1.4.2')
 	store.startDownload()
 	store.downloadFinished()
-	store.installFinished()
+	store.startInstall()
+	assert.equal(store.startInstall(), false)
+})
+
+test('installFailed returns to ready with the reason', () => {
+	const store = createUpdaterStore()
+	store.updateFound('1.4.2')
+	store.startDownload()
+	store.downloadFinished()
+	store.startInstall()
+	store.installFailed('signature mismatch')
 	assert.equal(store.phase(), 'ready')
+	assert.equal(store.error(), 'signature mismatch')
+	assert.equal(store.startInstall(), true)
+	assert.equal(store.error(), null)
+})
+
+test('fail records the reason and a retry clears it', () => {
+	const store = createUpdaterStore()
+	store.updateFound('1.4.2')
+	store.startDownload()
+	store.fail('network unreachable')
+	assert.equal(store.error(), 'network unreachable')
+	store.startDownload()
+	assert.equal(store.error(), null)
+})
+
+test('a failure shows the banner even for a dismissed version', () => {
+	const store = createUpdaterStore({ dismissedVersion: '1.4.2' })
+	store.updateFound('1.4.2')
+	store.startDownload()
+	store.fail('network unreachable')
+	assert.equal(store.bannerVisible(), true)
+	store.dismiss()
+	assert.equal(store.error(), null)
+	assert.equal(store.bannerVisible(), false)
+})
+
+test('a re-check of the same version keeps the failure reason', () => {
+	const store = createUpdaterStore()
+	store.updateFound('1.4.2')
+	store.startDownload()
+	store.fail('network unreachable')
+	store.updateFound('1.4.2')
+	assert.equal(store.error(), 'network unreachable')
+	store.updateFound('1.5.0')
+	assert.equal(store.error(), null)
+})
+
+test('updateFound keeps manifest notes and treats blank ones as absent', () => {
+	const store = createUpdaterStore()
+	store.updateFound('1.4.2', null, '- fixes')
+	assert.equal(store.notes(), '- fixes')
+	store.updateFound('1.4.2', null, '  ')
+	assert.equal(store.notes(), null)
+})
+
+test('markChecked records when the last check ran', () => {
+	const store = createUpdaterStore({ lastCheckedAt: 100 })
+	assert.equal(store.lastCheckedAt(), 100)
+	store.markChecked(250)
+	assert.equal(store.lastCheckedAt(), 250)
 })
 
 test('a ready update ignores a dismissal from before the download', () => {
@@ -138,7 +218,6 @@ test('a ready update ignores a dismissal from before the download', () => {
 	store.dismiss()
 	store.startDownload()
 	store.downloadFinished()
-	store.installFinished()
 	assert.equal(store.bannerVisible(), true)
 })
 
@@ -194,7 +273,7 @@ test('restarting moves to restarting', () => {
 	store.updateFound('1.4.2')
 	store.startDownload()
 	store.downloadFinished()
-	store.installFinished()
+	store.startInstall()
 	store.restarting()
 	assert.equal(store.phase(), 'restarting')
 })

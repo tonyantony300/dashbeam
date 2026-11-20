@@ -1,17 +1,17 @@
 import { create } from 'zustand'
 
 /**
- * Phases of a desktop update, in the order they occur. `installing` covers the
- * tail of `downloadAndInstall` after the bytes are in but before the installer
- * has finished; `ready` means the new version is staged and only a relaunch is
- * left.
+ * Phases of a desktop update, in the order they occur. `ready` means the
+ * package is downloaded but nothing is installed yet: on Windows the installer
+ * quits the app the moment it starts, so `installing` only begins once the
+ * user has agreed to restart.
  */
 export type UpdaterPhase =
 	| 'idle'
 	| 'available'
 	| 'downloading'
-	| 'installing'
 	| 'ready'
+	| 'installing'
 	| 'restarting'
 
 export interface UpdaterStoreApi {
@@ -24,16 +24,27 @@ export interface UpdaterStoreApi {
 	dismissedVersion: () => string | null
 	progressRatio: () => number | null
 	bannerVisible: () => boolean
-	updateFound: (version: string, downloadUrl?: string | null) => void
+	/** Notes carried by the update manifest; often empty. */
+	notes: () => string | null
+	/** Why the last download or install failed, until retried or dismissed. */
+	error: () => string | null
+	lastCheckedAt: () => number | null
+	updateFound: (
+		version: string,
+		downloadUrl?: string | null,
+		notes?: string | null
+	) => void
 	noUpdate: () => void
+	markChecked: (at: number) => void
 	dismiss: () => void
 	startDownload: () => boolean
 	setContentLength: (bytes: number) => void
 	addProgress: (bytes: number) => void
 	downloadFinished: () => void
-	installFinished: () => void
+	startInstall: () => boolean
+	installFailed: (reason: string) => void
 	restarting: () => void
-	fail: () => void
+	fail: (reason?: string) => void
 }
 
 /**
@@ -45,7 +56,10 @@ export interface UpdaterStoreApi {
  * of them from starting two downloads of the same release.
  */
 export function createUpdaterStore(
-	options: { dismissedVersion?: string | null } = {}
+	options: {
+		dismissedVersion?: string | null
+		lastCheckedAt?: number | null
+	} = {}
 ): UpdaterStoreApi {
 	let phase: UpdaterPhase = 'idle'
 	let version: string | null = null
@@ -53,17 +67,27 @@ export function createUpdaterStore(
 	let downloadedBytes = 0
 	let contentLength: number | null = null
 	let dismissedVersion: string | null = options.dismissedVersion ?? null
+	let notes: string | null = null
+	let error: string | null = null
+	let lastCheckedAt: number | null = options.lastCheckedAt ?? null
 
 	const clearProgress = () => {
 		downloadedBytes = 0
 		contentLength = null
 	}
 
-	const updateFound: UpdaterStoreApi['updateFound'] = (found, url = null) => {
+	const updateFound: UpdaterStoreApi['updateFound'] = (
+		found,
+		url = null,
+		foundNotes = null
+	) => {
 		// A periodic re-check must not restart a download that's already running.
 		if (phase !== 'idle' && phase !== 'available') return
+		// A failure belongs to the release it happened on.
+		if (found !== version) error = null
 		version = found
 		downloadUrl = url
+		notes = foundNotes?.trim() ? foundNotes : null
 		phase = 'available'
 	}
 
@@ -71,6 +95,8 @@ export function createUpdaterStore(
 		if (phase !== 'idle' && phase !== 'available') return
 		version = null
 		downloadUrl = null
+		notes = null
+		error = null
 		phase = 'idle'
 		clearProgress()
 	}
@@ -78,12 +104,14 @@ export function createUpdaterStore(
 	const startDownload: UpdaterStoreApi['startDownload'] = () => {
 		if (phase !== 'available') return false
 		phase = 'downloading'
+		error = null
 		clearProgress()
 		return true
 	}
 
-	const fail: UpdaterStoreApi['fail'] = () => {
+	const fail: UpdaterStoreApi['fail'] = (reason) => {
 		phase = version ? 'available' : 'idle'
+		error = version ? (reason ?? null) : null
 		clearProgress()
 	}
 
@@ -98,14 +126,22 @@ export function createUpdaterStore(
 			contentLength ? Math.min(1, downloadedBytes / contentLength) : null,
 		// "Later" only silences the banner for the version it was clicked on, and
 		// only while that version is still merely available — once bytes are
-		// moving the banner is progress, not a nag.
+		// moving the banner is progress, not a nag. A failure always shows:
+		// the user asked for this update and must hear that it didn't happen.
 		bannerVisible: () =>
 			phase !== 'idle' &&
-			(phase !== 'available' || dismissedVersion !== version),
+			(phase !== 'available' || dismissedVersion !== version || error !== null),
+		notes: () => notes,
+		error: () => error,
+		lastCheckedAt: () => lastCheckedAt,
 		updateFound,
 		noUpdate,
+		markChecked: (at) => {
+			lastCheckedAt = at
+		},
 		dismiss: () => {
 			dismissedVersion = version
+			error = null
 		},
 		startDownload,
 		setContentLength: (bytes) => {
@@ -115,10 +151,19 @@ export function createUpdaterStore(
 			downloadedBytes += bytes
 		},
 		downloadFinished: () => {
-			phase = 'installing'
+			if (phase === 'downloading') phase = 'ready'
 		},
-		installFinished: () => {
+		// Whichever surface clicks first owns the install; the rest no-op.
+		startInstall: () => {
+			if (phase !== 'ready') return false
+			phase = 'installing'
+			error = null
+			return true
+		},
+		// The package is still on disk, so the user can retry from `ready`.
+		installFailed: (reason) => {
 			phase = 'ready'
+			error = reason
 		},
 		restarting: () => {
 			phase = 'restarting'
@@ -128,26 +173,39 @@ export function createUpdaterStore(
 }
 
 const DISMISSED_KEY = 'dashbeam.updater.dismissed-version'
+const LAST_CHECKED_KEY = 'dashbeam.updater.last-checked-at'
 
 /** `localStorage` is absent under `node --test`, and can throw in a webview. */
-function readDismissedVersion(): string | null {
+function readStored(key: string): string | null {
 	try {
 		return typeof localStorage === 'undefined'
 			? null
-			: localStorage.getItem(DISMISSED_KEY)
+			: localStorage.getItem(key)
 	} catch {
 		return null
 	}
 }
 
-function writeDismissedVersion(value: string | null): void {
+function writeStored(key: string, value: string | null): void {
 	try {
 		if (typeof localStorage === 'undefined') return
-		if (value === null) localStorage.removeItem(DISMISSED_KEY)
-		else localStorage.setItem(DISMISSED_KEY, value)
+		if (value === null) localStorage.removeItem(key)
+		else localStorage.setItem(key, value)
 	} catch {
-		// A dismissal that doesn't survive a restart is not worth failing over.
+		// Losing this across a restart is not worth failing over.
 	}
+}
+
+function readLastCheckedAt(): number | null {
+	const stored = Number(readStored(LAST_CHECKED_KEY))
+	return Number.isFinite(stored) && stored > 0 ? stored : null
+}
+
+/** Which release the "What's new" dialog is showing, and from which side. */
+export type WhatsNewTarget = {
+	version: string
+	/** True after updating; false while the release is still only offered. */
+	installed: boolean
 }
 
 type UpdaterState = {
@@ -159,16 +217,24 @@ type UpdaterState = {
 	dismissedVersion: string | null
 	progressRatio: number | null
 	bannerVisible: boolean
-	updateFound: (version: string, downloadUrl?: string | null) => void
+	notes: string | null
+	error: string | null
+	lastCheckedAt: number | null
+	whatsNew: WhatsNewTarget | null
+	updateFound: UpdaterStoreApi['updateFound']
 	noUpdate: () => void
+	markChecked: (at: number) => void
 	dismiss: () => void
 	startDownload: () => boolean
 	setContentLength: (bytes: number) => void
 	addProgress: (bytes: number) => void
 	downloadFinished: () => void
-	installFinished: () => void
+	startInstall: () => boolean
+	installFailed: (reason: string) => void
 	restarting: () => void
-	fail: () => void
+	fail: (reason?: string) => void
+	openWhatsNew: (target: WhatsNewTarget) => void
+	closeWhatsNew: () => void
 }
 
 /** Every derived value comes from the core, so the tested logic has one home. */
@@ -182,11 +248,17 @@ function snapshot(core: UpdaterStoreApi) {
 		dismissedVersion: core.dismissedVersion(),
 		progressRatio: core.progressRatio(),
 		bannerVisible: core.bannerVisible(),
+		notes: core.notes(),
+		error: core.error(),
+		lastCheckedAt: core.lastCheckedAt(),
 	}
 }
 
 export const useUpdaterStore = create<UpdaterState>((set) => {
-	const core = createUpdaterStore({ dismissedVersion: readDismissedVersion() })
+	const core = createUpdaterStore({
+		dismissedVersion: readStored(DISMISSED_KEY),
+		lastCheckedAt: readLastCheckedAt(),
+	})
 	const publish = () => set(snapshot(core))
 	// The updater emits one Progress event per chunk — thousands for a typical
 	// installer. Re-rendering on each would be its own kind of jerk, so the core
@@ -195,17 +267,26 @@ export const useUpdaterStore = create<UpdaterState>((set) => {
 
 	return {
 		...snapshot(core),
-		updateFound: (version, downloadUrl) => {
-			core.updateFound(version, downloadUrl)
+		whatsNew: null,
+		openWhatsNew: (target) => set({ whatsNew: target }),
+		closeWhatsNew: () => set({ whatsNew: null }),
+		updateFound: (version, downloadUrl, notes) => {
+			core.updateFound(version, downloadUrl, notes)
 			publish()
 		},
 		noUpdate: () => {
 			core.noUpdate()
 			publish()
 		},
+		markChecked: (at) => {
+			if (core.lastCheckedAt() === at) return
+			core.markChecked(at)
+			writeStored(LAST_CHECKED_KEY, String(at))
+			publish()
+		},
 		dismiss: () => {
 			core.dismiss()
-			writeDismissedVersion(core.dismissedVersion())
+			writeStored(DISMISSED_KEY, core.dismissedVersion())
 			publish()
 		},
 		startDownload: () => {
@@ -240,16 +321,21 @@ export const useUpdaterStore = create<UpdaterState>((set) => {
 			core.downloadFinished()
 			publish()
 		},
-		installFinished: () => {
-			core.installFinished()
+		startInstall: () => {
+			const started = core.startInstall()
+			if (started) publish()
+			return started
+		},
+		installFailed: (reason) => {
+			core.installFailed(reason)
 			publish()
 		},
 		restarting: () => {
 			core.restarting()
 			publish()
 		},
-		fail: () => {
-			core.fail()
+		fail: (reason) => {
+			core.fail(reason)
 			publishedRatio = null
 			publish()
 		},

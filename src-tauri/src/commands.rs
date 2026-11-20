@@ -78,12 +78,12 @@ fn build_emitter(
 
 /// The node service, if pairing came up. Its absence is not fatal — history
 /// just records an endpoint id with no name.
-#[cfg(any(desktop, target_os = "android"))]
+#[cfg(any(desktop, target_os = "android", target_os = "ios"))]
 async fn app_state_node(state: &State<'_, AppStateMutex>) -> Option<Arc<NodeService>> {
     state.lock().await.node.clone()
 }
 
-#[cfg(not(any(desktop, target_os = "android")))]
+#[cfg(not(any(desktop, target_os = "android", target_os = "ios")))]
 async fn app_state_node(_state: &State<'_, AppStateMutex>) -> Option<Arc<NodeService>> {
     None
 }
@@ -436,7 +436,7 @@ pub async fn stop_sharing(state: State<'_, AppStateMutex>) -> Result<(), String>
         let _ = std::fs::remove_dir_all(&share._path);
     }
 
-    #[cfg(any(desktop, target_os = "android"))]
+    #[cfg(any(desktop, target_os = "android", target_os = "ios"))]
     if let Some(node) = app_state.node.as_ref() {
         node.stop_pairing_host().await;
     }
@@ -1161,7 +1161,7 @@ pub async fn export_debug_bundle(
         }
     }
 
-    #[cfg(any(desktop, target_os = "android"))]
+    #[cfg(any(desktop, target_os = "android", target_os = "ios"))]
     {
         let guard = state.lock().await;
         match guard.node.as_ref() {
@@ -1339,12 +1339,25 @@ pub async fn verify_discovery(
 /// Reads `discoverability` out of the raw `settings.json` the frontend's
 /// `useAppSettingStore` writes (zustand `persist` envelope under
 /// `app_settings`). `None` when missing or malformed — callers default.
-#[cfg(any(desktop, target_os = "android", test))]
+#[cfg(any(desktop, target_os = "android", target_os = "ios", test))]
 fn parse_persisted_discoverability(raw: &str) -> Option<Discoverability> {
     let file: serde_json::Value = serde_json::from_str(raw).ok()?;
     let envelope: serde_json::Value =
         serde_json::from_str(file.get("app_settings")?.as_str()?).ok()?;
     serde_json::from_value(envelope.get("state")?.get("discoverability")?.clone()).ok()
+}
+
+/// iOS drops the raw multicast socket mDNS uses unless the app holds the
+/// Apple-approved com.apple.developer.networking.multicast entitlement, so
+/// Nearby stays off there whatever was persisted or requested. The frontend
+/// hides it to match (`IS_NEARBY_CAPABLE`).
+#[cfg(any(desktop, target_os = "android", target_os = "ios"))]
+fn effective_discoverability(setting: Discoverability) -> Discoverability {
+    if cfg!(target_os = "ios") {
+        Discoverability::Off
+    } else {
+        setting
+    }
 }
 
 /// Reads the persisted discoverability choice before `NodeService::start`, so
@@ -1354,7 +1367,7 @@ fn parse_persisted_discoverability(raw: &str) -> Option<Discoverability> {
 /// A raw file read, not `StoreExt::store`: loading the store Rust-side would
 /// register it without the frontend's `LazyStore` options, and the plugin
 /// reuses whichever instance registered first.
-#[cfg(any(desktop, target_os = "android"))]
+#[cfg(any(desktop, target_os = "android", target_os = "ios"))]
 fn load_persisted_discoverability(app_handle: &tauri::AppHandle) -> Discoverability {
     let Ok(data_dir) = app_handle.path().app_data_dir() else {
         return Discoverability::default();
@@ -1388,7 +1401,7 @@ pub fn load_persisted_minimize_to_tray(app_handle: &tauri::AppHandle) -> bool {
     parse_persisted_minimize_to_tray(&raw).unwrap_or(true)
 }
 
-#[cfg(any(desktop, target_os = "android"))]
+#[cfg(any(desktop, target_os = "android", target_os = "ios"))]
 pub async fn init_node_service(app_handle: tauri::AppHandle) -> Result<(), String> {
     let data_dir = app_handle
         .path()
@@ -1398,7 +1411,7 @@ pub async fn init_node_service(app_handle: tauri::AppHandle) -> Result<(), Strin
     let (relay_mode, _) = resolve_relay_mode_with_fallback(None).await?;
     let relay_mode: iroh::endpoint::RelayMode = relay_mode.into();
     let discovery_mode = build_discovery_mode(None)?;
-    let discoverability = load_persisted_discoverability(&app_handle);
+    let discoverability = effective_discoverability(load_persisted_discoverability(&app_handle));
 
     let emitter = Arc::new(TauriEventEmitter {
         app_handle: app_handle.clone(),
@@ -1439,7 +1452,7 @@ pub struct NodeStatusResponse {
     pub network_ready: bool,
 }
 
-#[cfg(any(desktop, target_os = "android"))]
+#[cfg(any(desktop, target_os = "android", target_os = "ios"))]
 fn node_status_from_state(guard: &crate::state::AppState) -> NodeStatusResponse {
     if let Some(node) = &guard.node {
         return NodeStatusResponse {
@@ -1463,7 +1476,7 @@ fn node_status_from_state(guard: &crate::state::AppState) -> NodeStatusResponse 
     }
 }
 
-#[cfg(any(desktop, target_os = "android"))]
+#[cfg(any(desktop, target_os = "android", target_os = "ios"))]
 #[tauri::command]
 pub async fn get_node_status(
     state: State<'_, AppStateMutex>,
@@ -1474,7 +1487,7 @@ pub async fn get_node_status(
     Ok(status)
 }
 
-#[cfg(any(desktop, target_os = "android"))]
+#[cfg(any(desktop, target_os = "android", target_os = "ios"))]
 #[tauri::command]
 pub async fn reconfigure_node_relay(
     relay: Option<RelayConfigArg>,
@@ -1530,7 +1543,7 @@ pub async fn reconfigure_node_relay(
     Ok(())
 }
 
-#[cfg(any(desktop, target_os = "android"))]
+#[cfg(any(desktop, target_os = "android", target_os = "ios"))]
 #[tauri::command]
 pub async fn get_device_info(state: State<'_, AppStateMutex>) -> Result<DeviceInfo, String> {
     let guard = state.lock().await;
@@ -1545,7 +1558,7 @@ pub async fn get_device_info(state: State<'_, AppStateMutex>) -> Result<DeviceIn
     Ok(info)
 }
 
-#[cfg(any(desktop, target_os = "android"))]
+#[cfg(any(desktop, target_os = "android", target_os = "ios"))]
 #[tauri::command]
 pub async fn set_device_display_name(
     display_name: String,
@@ -1560,7 +1573,7 @@ pub async fn set_device_display_name(
     Ok(info)
 }
 
-#[cfg(any(desktop, target_os = "android"))]
+#[cfg(any(desktop, target_os = "android", target_os = "ios"))]
 #[tauri::command]
 pub async fn rename_paired_device(
     endpoint_id: String,
@@ -1576,7 +1589,7 @@ pub async fn rename_paired_device(
     Ok(device)
 }
 
-#[cfg(any(desktop, target_os = "android"))]
+#[cfg(any(desktop, target_os = "android", target_os = "ios"))]
 #[tauri::command]
 pub async fn trust_paired_device(
     endpoint_id: String,
@@ -1592,7 +1605,7 @@ pub async fn trust_paired_device(
     Ok(device)
 }
 
-#[cfg(any(desktop, target_os = "android"))]
+#[cfg(any(desktop, target_os = "android", target_os = "ios"))]
 fn require_node(guard: &crate::state::AppState) -> Result<&NodeService, String> {
     guard.node.as_deref().ok_or_else(|| {
         guard
@@ -1602,7 +1615,7 @@ fn require_node(guard: &crate::state::AppState) -> Result<&NodeService, String> 
     })
 }
 
-#[cfg(any(desktop, target_os = "android"))]
+#[cfg(any(desktop, target_os = "android", target_os = "ios"))]
 fn require_node_arc(guard: &crate::state::AppState) -> Result<Arc<NodeService>, String> {
     guard.node.clone().ok_or_else(|| {
         guard
@@ -1612,7 +1625,7 @@ fn require_node_arc(guard: &crate::state::AppState) -> Result<Arc<NodeService>, 
     })
 }
 
-#[cfg(any(desktop, target_os = "android"))]
+#[cfg(any(desktop, target_os = "android", target_os = "ios"))]
 #[tauri::command]
 pub async fn get_pairing_ticket(state: State<'_, AppStateMutex>) -> Result<String, String> {
     let node = {
@@ -1622,7 +1635,7 @@ pub async fn get_pairing_ticket(state: State<'_, AppStateMutex>) -> Result<Strin
     node.pairing_ticket().map_err(|e| e.to_string())
 }
 
-#[cfg(any(desktop, target_os = "android"))]
+#[cfg(any(desktop, target_os = "android", target_os = "ios"))]
 #[tauri::command]
 pub async fn start_pairing_host(
     ttl_secs: Option<u64>,
@@ -1640,7 +1653,7 @@ pub async fn start_pairing_host(
     Ok(ticket)
 }
 
-#[cfg(any(desktop, target_os = "android"))]
+#[cfg(any(desktop, target_os = "android", target_os = "ios"))]
 #[tauri::command]
 pub async fn stop_pairing_host(state: State<'_, AppStateMutex>) -> Result<(), String> {
     let node = {
@@ -1654,7 +1667,7 @@ pub async fn stop_pairing_host(state: State<'_, AppStateMutex>) -> Result<(), St
     Ok(())
 }
 
-#[cfg(any(desktop, target_os = "android"))]
+#[cfg(any(desktop, target_os = "android", target_os = "ios"))]
 #[tauri::command]
 pub async fn join_pairing(ticket: String, state: State<'_, AppStateMutex>) -> Result<(), String> {
     let node = {
@@ -1668,7 +1681,7 @@ pub async fn join_pairing(ticket: String, state: State<'_, AppStateMutex>) -> Re
     Ok(())
 }
 
-#[cfg(any(desktop, target_os = "android"))]
+#[cfg(any(desktop, target_os = "android", target_os = "ios"))]
 #[tauri::command]
 pub async fn list_paired_devices(
     state: State<'_, AppStateMutex>,
@@ -1682,7 +1695,7 @@ pub async fn list_paired_devices(
     Ok(devices)
 }
 
-#[cfg(any(desktop, target_os = "android"))]
+#[cfg(any(desktop, target_os = "android", target_os = "ios"))]
 #[tauri::command]
 pub async fn forget_paired_device(
     endpoint_id: String,
@@ -1713,7 +1726,7 @@ pub struct InviteDelivered {
     pub delivered: bool,
 }
 
-#[cfg(any(desktop, target_os = "android"))]
+#[cfg(any(desktop, target_os = "android", target_os = "ios"))]
 #[tauri::command]
 pub async fn invite_paired_device(
     endpoint_id: String,
@@ -1736,7 +1749,7 @@ pub async fn invite_paired_device(
     Ok(InviteDelivered { delivered })
 }
 
-#[cfg(any(desktop, target_os = "android"))]
+#[cfg(any(desktop, target_os = "android", target_os = "ios"))]
 #[tauri::command]
 pub async fn respond_paired_invite(
     endpoint_id: String,
@@ -1754,7 +1767,7 @@ pub async fn respond_paired_invite(
     Ok(())
 }
 
-#[cfg(any(desktop, target_os = "android"))]
+#[cfg(any(desktop, target_os = "android", target_os = "ios"))]
 #[tauri::command]
 pub async fn list_nearby(state: State<'_, AppStateMutex>) -> Result<Vec<NearbyDevice>, String> {
     let node = {
@@ -1764,7 +1777,7 @@ pub async fn list_nearby(state: State<'_, AppStateMutex>) -> Result<Vec<NearbyDe
     Ok(node.list_nearby().await)
 }
 
-#[cfg(any(desktop, target_os = "android"))]
+#[cfg(any(desktop, target_os = "android", target_os = "ios"))]
 #[tauri::command]
 pub async fn get_discoverability(
     state: State<'_, AppStateMutex>,
@@ -1779,7 +1792,7 @@ pub async fn get_discoverability(
 /// The frontend seam is `setDiscoverability` in
 /// `frontend/src/lib/pairing-api.ts` — its invoke payload key must match this
 /// command's `setting` parameter name.
-#[cfg(any(desktop, target_os = "android"))]
+#[cfg(any(desktop, target_os = "android", target_os = "ios"))]
 #[tauri::command]
 pub async fn set_discoverability(
     setting: Discoverability,
@@ -1790,6 +1803,7 @@ pub async fn set_discoverability(
         let guard = state.lock().await;
         require_node_arc(&guard)?
     };
+    let setting = effective_discoverability(setting);
     node.set_discoverability(setting).await.map_err(|error| {
         tracing::error!(
             target: "dashbeam::_events::nearby::set_discoverability_failed",
@@ -1819,7 +1833,7 @@ pub struct NearbyStatusResponse {
     pub reason: Option<String>,
 }
 
-#[cfg(any(desktop, target_os = "android"))]
+#[cfg(any(desktop, target_os = "android", target_os = "ios"))]
 #[tauri::command]
 pub async fn nearby_status(
     state: State<'_, AppStateMutex>,
@@ -1836,7 +1850,7 @@ pub async fn nearby_status(
 /// Delivers the caller's active share ticket to a Nearby device over the
 /// control ALPN — same path as `invite_paired_device`. The receiver's
 /// fingerprint confirmation is what promotes the peer to paired.
-#[cfg(any(desktop, target_os = "android"))]
+#[cfg(any(desktop, target_os = "android", target_os = "ios"))]
 #[tauri::command]
 pub async fn invite_nearby_device(
     endpoint_id: String,
@@ -1878,7 +1892,7 @@ pub async fn invite_nearby_device(
 
 /// Asks a Nearby device to pair (no file share). Receiver confirms on name /
 /// device type; accept reuses `respond_nearby_invite`.
-#[cfg(any(desktop, target_os = "android"))]
+#[cfg(any(desktop, target_os = "android", target_os = "ios"))]
 #[tauri::command]
 pub async fn request_nearby_pair(
     endpoint_id: String,
@@ -1896,7 +1910,7 @@ pub async fn request_nearby_pair(
     Ok(InviteDelivered { delivered })
 }
 
-#[cfg(any(desktop, target_os = "android"))]
+#[cfg(any(desktop, target_os = "android", target_os = "ios"))]
 #[tauri::command]
 pub async fn respond_nearby_invite(
     endpoint_id: String,

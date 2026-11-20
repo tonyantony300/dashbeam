@@ -50,6 +50,16 @@ pnpm preview:web
 pnpm android:dev
 ```
 
+### iOS
+
+A Mac is required to build the iOS app. You do not need to have a physical iOS device to build and test the project, however some features are not available on the simulator. 
+
+First you should install Xcode 27. You can do this from the Mac App Store, though it is often a pain and I would recommend installing from https://developer.apple.com/. There is also a helpful xcode version management tool: https://github.com/XcodesOrg/xcodes.
+
+Once you have xcode installed you should "select" it with "sudo xcode-select -s /Applications/Xcode.app/" or substitute the path you installed to. This basically sets the version of Xcode that is invoked by other tools.
+
+I would recommend using Nix to install the rest of the project dependencies, specific instructions for iOS are in the section below.
+
 ### Nix / NixOS
 
 A flake dev shell provides the pinned Rust toolchain (with the `wasm32-unknown-unknown` target), Node, pnpm, and the full WebKitGTK stack `tauri dev` needs — no system packages required.
@@ -65,8 +75,9 @@ The shell reads `rust-toolchain.toml`, so bumping the pin there is enough — th
 Notes:
 
 - **`programs.nix-ld.enable = true;`** is required on NixOS. pnpm downloads prebuilt binaries (Biome, Rollup, esbuild) that expect a standard dynamic loader; without nix-ld they fail with "no such file or directory" on an executable that plainly exists.
-- **`wasm-bindgen-cli` must match `wasm-bindgen` in `wasm-bridge/Cargo.lock` exactly.** The shell warns on entry if nixpkgs has drifted and prints the `cargo install` line that fixes it.
+- **`wasm-bindgen-cli` must match `wasm-bindgen` in `wasm-bridge/Cargo.lock` exactly.** The shell installs the matching versioned nixpkgs package (e.g. `wasm-bindgen-cli_0_2_126`); if nixpkgs doesn't have that version, it warns on entry and prints the `cargo install` line that fixes it.
 - **Android is not covered** by the shell — the SDK/NDK are still on you.
+- **iOS (macOS only) uses a separate shell**, `nix develop .#ios`. It adds the iOS Rust targets, XcodeGen and CocoaPods, and builds with Xcode's toolchain rather than nix's, so Xcode must be installed. Run `pnpm tauri ios init` once to generate `src-tauri/gen/apple` from `src-tauri/ios/project.yml`, then `pnpm tauri ios dev --open` and Run from Xcode — Xcode's Rust build phase enters the same shell itself. Physical devices also need `APPLE_DEVELOPMENT_TEAM` set to your team ID.
 - **Bundling** (`pnpm tauri build` with installers) is not supported on NixOS; use `--no-bundle`.
 - The shell sets `WEBKIT_DISABLE_DMABUF_RENDERER=1`, which avoids a blank webview on NVIDIA and older Mesa. Drop it from `flake.nix` if your setup doesn't need it.
 
