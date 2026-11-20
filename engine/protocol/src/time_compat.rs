@@ -29,27 +29,15 @@ where
     tokio::time::timeout(duration, future).await
 }
 
-/// JS timer futures are `!Send`; run the inner future directly on wasm.
+/// Real deadline in the browser: `n0_future`'s timer wraps `setTimeout` in a
+/// `SendWrapper`, so it stays `Send` for iroh protocol handlers.
 #[cfg(target_arch = "wasm32")]
-pub async fn timeout<F, T>(duration: Duration, future: F) -> Result<T, TimeoutElapsed>
+pub async fn timeout<F, T>(
+    duration: Duration,
+    future: F,
+) -> Result<T, n0_future::time::Elapsed>
 where
     F: std::future::Future<Output = T>,
 {
-    let _ = duration;
-    Ok(future.await)
+    n0_future::time::timeout(duration, future).await
 }
-
-/// Stand-in for `tokio::time::error::Elapsed` on wasm32.
-#[cfg(target_arch = "wasm32")]
-#[derive(Debug, Clone, Copy)]
-pub struct TimeoutElapsed;
-
-#[cfg(target_arch = "wasm32")]
-impl std::fmt::Display for TimeoutElapsed {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("timeout elapsed")
-    }
-}
-
-#[cfg(target_arch = "wasm32")]
-impl std::error::Error for TimeoutElapsed {}
