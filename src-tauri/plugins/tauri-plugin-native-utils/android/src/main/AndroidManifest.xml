@@ -9,6 +9,10 @@
     <!-- Required for WifiManager.MulticastLock; Android drops multicast to apps
          that don't hold one, so mDNS needs this to answer reliably. -->
     <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
+    <!-- That permission implies a required android.hardware.wifi, which Play
+         uses to filter out devices without Wi-Fi. PresenceService already
+         tolerates a missing WifiManager, so mark it optional. -->
+    <uses-feature android:name="android.hardware.wifi" android:required="false" />
 
     <application>
         <!-- connectedDevice, not dataSync: Android 15 caps dataSync foreground
