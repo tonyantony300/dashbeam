@@ -3,6 +3,7 @@
 Find the symptom that matches what you're seeing. Each section lists the most common
 causes first.
 
+- [The .rpm won't install](#the-rpm-wont-install)
 - [The app won't open](#the-app-wont-open)
 - [The window is blank or white](#the-window-is-blank-or-white)
 - [I can't connect to the other device](#i-cant-connect-to-the-other-device)
@@ -16,6 +17,25 @@ causes first.
 
 Still stuck? Open an [issue](https://github.com/tonyantony300/dashbeam/issues/new/choose)
 or ask in [Discord](https://discord.gg/xwb7z22Eve).
+
+---
+
+## The .rpm won't install
+
+`rpm` or your software centre reports `does not verify: no signature` or `NOKEY`.
+
+**Import the DashBeam signing key first.** Fedora 45 and later refuse packages signed
+by a key that isn't in the rpm keyring. Import it once, then install:
+
+```bash
+sudo rpm --import https://github.com/tonyantony300/dashbeam/releases/latest/download/RPM-GPG-KEY-dashbeam
+sudo dnf install ./DashBeam-*.rpm
+```
+
+**`no signature` means the package is unsigned.** DashBeam 0.7.2 and earlier shipped
+unsigned RPMs. Install a newer release. If you must install an old one, run
+`sudo rpm -i --nosignature DashBeam-*.rpm`, and only on a file you downloaded from the
+[releases page](https://github.com/tonyantony300/dashbeam/releases).
 
 ---
 
