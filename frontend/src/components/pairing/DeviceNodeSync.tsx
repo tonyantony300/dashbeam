@@ -3,6 +3,7 @@ import { listen } from '@/lib/platform-api'
 import { IS_PAIRING_CAPABLE } from '@/lib/platform'
 import { getRelayConfigArg } from '@/lib/relay'
 import { getDiscoveryConfigArg } from '@/lib/discovery'
+import { whenHydrated } from '@/lib/persist-hydration'
 import {
 	isKnownPairedEndpoint,
 	reconfigureNodeRelay,
@@ -58,21 +59,27 @@ export function DeviceNodeSync() {
 	useEffect(() => {
 		if (!IS_PAIRING_CAPABLE || !isNodeReady || didSyncRelay.current) return
 		didSyncRelay.current = true
-		void reconfigureNodeRelay(
-			getRelayConfigArg(),
-			getDiscoveryConfigArg()
-		).catch((error) => {
-			// Allow a later retry if the first sync failed (e.g. node still settling).
-			didSyncRelay.current = false
-			console.warn('Failed to sync node relay on startup:', error)
-		})
-		// `init_node_service` already applied this at startup; re-applying is a
-		// safety net for a failed read, mirroring the relay sync above.
-		void setDiscoverability(
-			useAppSettingStore.getState().discoverability
-		).catch((error) => {
-			console.warn('Failed to sync discoverability on startup:', error)
-		})
+		// `init_node_service` already applied these from disk; this is a safety
+		// net and applies relay `public` fallback. Settings load asynchronously,
+		// so reading them before hydration would push the in-memory defaults
+		// (public relays, discoverable to everyone) onto the node.
+		const hydrated = whenHydrated(useAppSettingStore.persist)
+		void hydrated
+			.then(() =>
+				reconfigureNodeRelay(getRelayConfigArg(), getDiscoveryConfigArg())
+			)
+			.catch((error) => {
+				// Allow a later retry if the first sync failed (e.g. node still settling).
+				didSyncRelay.current = false
+				console.warn('Failed to sync node relay on startup:', error)
+			})
+		void hydrated
+			.then(() =>
+				setDiscoverability(useAppSettingStore.getState().discoverability)
+			)
+			.catch((error) => {
+				console.warn('Failed to sync discoverability on startup:', error)
+			})
 	}, [isNodeReady])
 
 	useEffect(() => {

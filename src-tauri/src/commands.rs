@@ -6,12 +6,12 @@ use crate::history::{
 use crate::state::{AppStateMutex, ShareHandle};
 use engine::{
     build_discovery_mode, download, fetch_metadata, get_relay_status as engine_get_relay_status,
-    resolve_relay_mode_with_fallback, start_share_items,
+    resolve_node_relay_mode, resolve_relay_mode_with_fallback, start_share_items,
     verify_discovery as engine_verify_discovery, verify_relays as engine_verify_relays,
-    AddrInfoOptions, AppHandle, DeviceInfo, Discoverability, EventEmitter, FileMetadata,
-    FilePreviewItem, NearbyDevice, NodeService, PairedDevice, PairedDeviceInfo, ReceiveOptions,
-    SendOptions, StagedStores, TransferDirection, TransferHistoryStore, TransferPathType,
-    TransferPeer, TransferRecord, TransferStatus,
+    AddrInfoOptions, AppHandle, DeviceInfo, Discoverability, DiscoveryModeOption, EventEmitter,
+    FileMetadata, FilePreviewItem, NearbyDevice, NodeService, PairedDevice, PairedDeviceInfo,
+    ReceiveOptions, SendOptions, StagedStores, TransferDirection, TransferHistoryStore,
+    TransferPathType, TransferPeer, TransferRecord, TransferStatus,
 };
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -1325,7 +1325,11 @@ async fn collect_preview_items(paths: &[PathBuf]) -> Result<Vec<FilePreviewItem>
 /// Verify connectivity to configured relay servers.
 #[tauri::command]
 pub async fn verify_relays(relay: RelayConfigArg) -> Result<VerifyRelaysResponse, String> {
-    engine_verify_relays(relay).await
+    let urls = relay.urls.join(", ");
+    engine_verify_relays(relay).await.inspect_err(|error| {
+        // The UI only shows "could not connect"; keep the cause for diagnostics.
+        tracing::warn!(target: "dashbeam::_events::relay::verify_failed", %urls, %error);
+    })
 }
 
 /// Verify reachability of a custom self-hosted discovery (pkarr) server.
@@ -1333,7 +1337,12 @@ pub async fn verify_relays(relay: RelayConfigArg) -> Result<VerifyRelaysResponse
 pub async fn verify_discovery(
     discovery: DiscoveryConfigArg,
 ) -> Result<VerifyDiscoveryResponse, String> {
-    engine_verify_discovery(discovery).await
+    let url = discovery.pkarr_relay_url.clone().unwrap_or_default();
+    engine_verify_discovery(discovery)
+        .await
+        .inspect_err(|error| {
+            tracing::warn!(target: "dashbeam::_events::discovery::verify_failed", %url, %error);
+        })
 }
 
 /// Reads `discoverability` out of the raw `settings.json` the frontend's
@@ -1401,6 +1410,104 @@ pub fn load_persisted_minimize_to_tray(app_handle: &tauri::AppHandle) -> bool {
     parse_persisted_minimize_to_tray(&raw).unwrap_or(true)
 }
 
+/// Relay + discovery fields of `useAppSettingStore` (same `settings.json`
+/// envelope as `parse_persisted_discoverability`).
+#[cfg(any(desktop, target_os = "android", target_os = "ios", test))]
+#[derive(serde::Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
+struct PersistedNetworkSettings {
+    relay_mode: Option<String>,
+    relay_urls: Vec<String>,
+    relay_auth_token: String,
+    relay_fallback: Option<String>,
+    discovery_mode: Option<String>,
+    pkarr_relay_url: String,
+    dns_origin: String,
+}
+
+#[cfg(any(desktop, target_os = "android", target_os = "ios", test))]
+impl PersistedNetworkSettings {
+    fn parse(raw: &str) -> Option<Self> {
+        let file: serde_json::Value = serde_json::from_str(raw).ok()?;
+        let envelope: serde_json::Value =
+            serde_json::from_str(file.get("app_settings")?.as_str()?).ok()?;
+        serde_json::from_value(envelope.get("state")?.clone()).ok()
+    }
+
+    /// Mirrors the frontend's `buildRelayConfigArg`.
+    fn relay_arg(&self) -> Option<RelayConfigArg> {
+        let mode = self.relay_mode.clone()?;
+        let custom = mode == "custom";
+        Some(RelayConfigArg {
+            urls: if custom {
+                self.relay_urls
+                    .iter()
+                    .map(|url| url.trim().to_string())
+                    .filter(|url| !url.is_empty())
+                    .collect()
+            } else {
+                Vec::new()
+            },
+            auth_token: (custom && !self.relay_auth_token.is_empty())
+                .then(|| self.relay_auth_token.clone()),
+            fallback: self.relay_fallback.clone(),
+            mode,
+        })
+    }
+
+    /// Mirrors the frontend's `buildDiscoveryConfigArg`.
+    fn discovery_arg(&self) -> Option<DiscoveryConfigArg> {
+        let mode = self.discovery_mode.clone()?;
+        let custom = mode == "custom";
+        let origin = self.dns_origin.trim();
+        Some(DiscoveryConfigArg {
+            pkarr_relay_url: custom.then(|| self.pkarr_relay_url.trim().to_string()),
+            dns_origin: (custom && !origin.is_empty()).then(|| origin.to_string()),
+            mode,
+        })
+    }
+}
+
+/// The device node's network config at launch, read from disk because the
+/// node starts before the webview. No relay probe: this runs inside `setup()`,
+/// and `DeviceNodeSync` applies `public` fallback once the UI loads.
+#[cfg(any(desktop, target_os = "android", target_os = "ios", test))]
+fn startup_network_modes(
+    raw_settings: Option<&str>,
+) -> (iroh::endpoint::RelayMode, DiscoveryModeOption) {
+    let settings = raw_settings.and_then(PersistedNetworkSettings::parse);
+    let relay_arg = settings
+        .as_ref()
+        .and_then(PersistedNetworkSettings::relay_arg);
+    let discovery_arg = settings
+        .as_ref()
+        .and_then(PersistedNetworkSettings::discovery_arg);
+
+    // Only a custom relay can fail to build. Strict never swaps it for public
+    // relays; `public` fallback asked for exactly that.
+    let public_fallback = settings
+        .as_ref()
+        .is_some_and(|s| s.relay_fallback.as_deref() == Some("public"));
+    let relay = match build_relay_mode(relay_arg) {
+        Ok(mode) => mode.into(),
+        Err(error) if public_fallback => {
+            tracing::warn!(%error, "saved custom relay unusable; using public relays (fallback)");
+            iroh::endpoint::RelayMode::Default
+        }
+        Err(error) => {
+            tracing::warn!(%error, "saved custom relay unusable; starting device node without relays");
+            iroh::endpoint::RelayMode::Disabled
+        }
+    };
+    // iroh has no "no discovery" mode here; an unusable custom pkarr URL keeps
+    // the previous default behaviour until the user fixes it.
+    let discovery = build_discovery_mode(discovery_arg).unwrap_or_else(|error| {
+        tracing::warn!(%error, "saved custom discovery unusable; using default discovery");
+        DiscoveryModeOption::Default
+    });
+    (relay, discovery)
+}
+
 #[cfg(any(desktop, target_os = "android", target_os = "ios"))]
 pub async fn init_node_service(app_handle: tauri::AppHandle) -> Result<(), String> {
     let data_dir = app_handle
@@ -1408,9 +1515,8 @@ pub async fn init_node_service(app_handle: tauri::AppHandle) -> Result<(), Strin
         .app_data_dir()
         .map_err(|e| e.to_string())?;
 
-    let (relay_mode, _) = resolve_relay_mode_with_fallback(None).await?;
-    let relay_mode: iroh::endpoint::RelayMode = relay_mode.into();
-    let discovery_mode = build_discovery_mode(None)?;
+    let raw_settings = std::fs::read_to_string(data_dir.join("settings.json")).ok();
+    let (relay_mode, discovery_mode) = startup_network_modes(raw_settings.as_deref());
     let discoverability = effective_discoverability(load_persisted_discoverability(&app_handle));
 
     let emitter = Arc::new(TauriEventEmitter {
@@ -1504,7 +1610,7 @@ pub async fn reconfigure_node_relay(
         .map(|r| r.urls.join(", "))
         .unwrap_or_default();
 
-    let (relay_mode, _) = resolve_relay_mode_with_fallback(relay).await?;
+    let (relay_mode, _) = resolve_node_relay_mode(relay).await?;
     let relay_mode: iroh::endpoint::RelayMode = relay_mode.into();
     let discovery_mode = build_discovery_mode(discovery)?;
 
@@ -2228,6 +2334,82 @@ mod tests {
         let envelope = serde_json::json!({ "state": { "discoverability": "bogus" } });
         let file = serde_json::json!({ "app_settings": envelope.to_string() }).to_string();
         assert_eq!(parse_persisted_discoverability(&file), None);
+    }
+
+    fn settings_file(state: serde_json::Value) -> String {
+        let envelope = serde_json::json!({ "state": state, "version": 0 });
+        serde_json::json!({ "app_settings": envelope.to_string() }).to_string()
+    }
+
+    /// The node starts before the webview, so it must read self-hosted infra
+    /// from disk — otherwise every launch touches n0's relays and pkarr first.
+    #[test]
+    fn startup_network_modes_apply_persisted_custom_infra() {
+        let file = settings_file(serde_json::json!({
+            "relayMode": "custom",
+            "relayUrls": [" https://relay.example.com ", ""],
+            "relayAuthToken": "",
+            "relayFallback": "strict",
+            "discoveryMode": "custom",
+            "pkarrRelayUrl": " https://dns.example.com/pkarr ",
+            "dnsOrigin": "",
+        }));
+
+        let (relay, discovery) = startup_network_modes(Some(&file));
+
+        assert!(matches!(relay, iroh::endpoint::RelayMode::Custom(_)));
+        assert!(format!("{relay:?}").contains("relay.example.com"));
+        match discovery {
+            DiscoveryModeOption::Custom {
+                pkarr_relay_url,
+                dns_origin,
+            } => {
+                assert_eq!(pkarr_relay_url.as_str(), "https://dns.example.com/pkarr");
+                assert!(dns_origin.is_none());
+            }
+            DiscoveryModeOption::Default => panic!("expected custom discovery"),
+        }
+    }
+
+    #[test]
+    fn startup_network_modes_default_without_saved_settings() {
+        for raw in [None, Some("not json"), Some("{}")] {
+            let (relay, discovery) = startup_network_modes(raw);
+            assert!(matches!(relay, iroh::endpoint::RelayMode::Default));
+            assert!(matches!(discovery, DiscoveryModeOption::Default));
+        }
+    }
+
+    #[test]
+    fn startup_network_modes_keep_disabled_relay() {
+        let file = settings_file(serde_json::json!({ "relayMode": "disabled" }));
+        let (relay, _) = startup_network_modes(Some(&file));
+        assert!(matches!(relay, iroh::endpoint::RelayMode::Disabled));
+    }
+
+    /// An unusable custom relay (e.g. no URL typed yet) must not silently
+    /// become the public relays.
+    #[test]
+    fn startup_network_modes_fail_closed_on_unusable_custom_relay() {
+        let file = settings_file(serde_json::json!({
+            "relayMode": "custom",
+            "relayUrls": ["  "],
+            "relayFallback": "strict",
+        }));
+        let (relay, _) = startup_network_modes(Some(&file));
+        assert!(matches!(relay, iroh::endpoint::RelayMode::Disabled));
+    }
+
+    /// `public` fallback means "use public relays when mine aren't usable".
+    #[test]
+    fn startup_network_modes_honor_public_fallback_for_unusable_custom_relay() {
+        let file = settings_file(serde_json::json!({
+            "relayMode": "custom",
+            "relayUrls": [],
+            "relayFallback": "public",
+        }));
+        let (relay, _) = startup_network_modes(Some(&file));
+        assert!(matches!(relay, iroh::endpoint::RelayMode::Default));
     }
 
     #[test]

@@ -155,18 +155,25 @@ pub struct VerifyDiscoveryResponse {
     pub latency_ms: u64,
 }
 
-/// Best-effort reachability check for a custom discovery server. Binds a minimal
-/// endpoint that publishes to the configured pkarr relay and waits for the node to
-/// come online, mirroring [`crate::relay::verify_relays`].
+/// Checks a custom discovery server end to end: publishes a throwaway record
+/// (PUT) and reads it back (GET) over HTTPS. Talks only to that server — no
+/// relay, no n0 infra.
 ///
-/// This probes HTTPS publish only; it does not validate NS delegation / port 53.
+/// Does not validate NS delegation / port 53 (`dns_origin`).
 #[cfg(not(target_arch = "wasm32"))]
 pub async fn verify_discovery(
     arg: DiscoveryConfigArg,
 ) -> Result<VerifyDiscoveryResponse, String> {
-    use iroh::address_lookup::pkarr::PkarrPublisher;
-    use iroh::endpoint::{presets, RelayMode};
-    use iroh::Endpoint;
+    verify_discovery_within(arg, DISCOVERY_PROBE_TIMEOUT).await
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+async fn verify_discovery_within(
+    arg: DiscoveryConfigArg,
+    deadline: Duration,
+) -> Result<VerifyDiscoveryResponse, String> {
+    use iroh::address_lookup::pkarr::{PkarrRelayClient, DEFAULT_PKARR_TTL};
+    use iroh::address_lookup::{EndpointInfo, UserData};
 
     let mode = build_discovery_mode(Some(arg))?;
     let DiscoveryModeOption::Custom {
@@ -176,38 +183,44 @@ pub async fn verify_discovery(
         return Err("Discovery verification requires custom discovery mode".to_string());
     };
 
-    let secret_key = get_or_create_secret().map_err(|e| e.to_string())?;
+    let tls = crate::tls_config::custom_infra_client_config()
+        .map_err(|e| format!("Failed to set up TLS: {e}"))?;
+    let client = PkarrRelayClient::new(pkarr_relay_url.clone(), tls, iroh::dns::DnsResolver::new());
 
-    // Custom discovery always needs OS trust for private-CA pkarr HTTPS.
-    // DotTolerant wrapping also covers the default n0 relay probe path on Windows.
-    let endpoint = crate::tls_config::with_system_ca_if_custom(
-        Endpoint::builder(presets::Minimal),
-        true,
-    )
-    .secret_key(secret_key)
-    .relay_mode(RelayMode::Default)
-    .address_lookup(PkarrPublisher::builder(pkarr_relay_url.clone()))
-    .bind()
-    .await
-    .map_err(|e| format!("Failed to bind endpoint: {e}"))?;
+    // Fresh key per probe: the record is never looked up by anyone else. The
+    // user-data tag tells a server operator what these records are.
+    let secret_key = get_or_create_secret().map_err(|e| e.to_string())?;
+    let probe_tag: UserData = "dashbeam-discovery-check"
+        .parse()
+        .map_err(|e| format!("Failed to build probe record: {e}"))?;
+    let packet = EndpointInfo::new(secret_key.public())
+        .with_user_data(Some(probe_tag))
+        .to_pkarr_signed_packet(&secret_key, DEFAULT_PKARR_TTL)
+        .map_err(|e| format!("Failed to build probe record: {e}"))?;
 
     let started = Instant::now();
-
-    timeout(DISCOVERY_PROBE_TIMEOUT, endpoint.online())
-        .await
-        .map_err(|_| {
-            format!(
-                "Timed out waiting for the network to come online ({}s)",
-                DISCOVERY_PROBE_TIMEOUT.as_secs()
-            )
-        })?;
-
-    let latency_ms = started.elapsed().as_millis() as u64;
-    endpoint.close().await;
+    let round_trip = async {
+        client
+            .publish(&packet)
+            .await
+            .map_err(|e| format!("Discovery server rejected the publish (PUT): {e}"))?;
+        client.resolve(secret_key.public()).await.map_err(|e| {
+            format!("Discovery server accepted the publish but lookup (GET) failed: {e}")
+        })
+    };
+    let resolved = timeout(deadline, round_trip).await.map_err(|_| {
+        format!(
+            "Timed out waiting for the discovery server ({}s)",
+            deadline.as_secs()
+        )
+    })??;
+    if resolved != packet {
+        return Err("Discovery server returned a different record than was published".to_string());
+    }
 
     Ok(VerifyDiscoveryResponse {
         url: Some(pkarr_relay_url.to_string()),
-        latency_ms,
+        latency_ms: started.elapsed().as_millis() as u64,
     })
 }
 
@@ -331,6 +344,151 @@ mod tests {
 
         let err = parse_dns_origin(Some("example.com:53")).expect_err("port should fail");
         assert!(err.contains("hostname"));
+    }
+
+    /// Minimal pkarr relay over loopback HTTP: PUT stores the body per path, GET
+    /// returns it. Records every request so tests can assert what was sent.
+    #[cfg(not(target_arch = "wasm32"))]
+    mod pkarr_server {
+        use std::collections::HashMap;
+        use std::sync::{Arc, Mutex};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::{TcpListener, TcpStream};
+
+        pub type Requests = Arc<Mutex<Vec<(String, String)>>>;
+
+        pub async fn spawn(put_status: u16) -> (String, Requests) {
+            spawn_with_delay(put_status, std::time::Duration::ZERO).await
+        }
+
+        pub async fn spawn_with_delay(
+            put_status: u16,
+            delay: std::time::Duration,
+        ) -> (String, Requests) {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let url = format!("http://{}/pkarr", listener.local_addr().unwrap());
+            let requests: Requests = Default::default();
+            let store: Arc<Mutex<HashMap<String, Vec<u8>>>> = Default::default();
+            let seen = requests.clone();
+            tokio::spawn(async move {
+                while let Ok((socket, _)) = listener.accept().await {
+                    tokio::spawn(handle(socket, put_status, delay, seen.clone(), store.clone()));
+                }
+            });
+            (url, requests)
+        }
+
+        async fn handle(
+            mut socket: TcpStream,
+            put_status: u16,
+            delay: std::time::Duration,
+            seen: Requests,
+            store: Arc<Mutex<HashMap<String, Vec<u8>>>>,
+        ) {
+            let mut buf = Vec::new();
+            let mut chunk = [0u8; 4096];
+            let header_end = loop {
+                let n = socket.read(&mut chunk).await.unwrap_or(0);
+                if n == 0 {
+                    return;
+                }
+                buf.extend_from_slice(&chunk[..n]);
+                if let Some(pos) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                    break pos + 4;
+                }
+            };
+            let head = String::from_utf8_lossy(&buf[..header_end]).to_string();
+            let mut request_line = head.lines().next().unwrap_or_default().split_whitespace();
+            let method = request_line.next().unwrap_or_default().to_string();
+            let path = request_line.next().unwrap_or_default().to_string();
+            let content_length = head
+                .lines()
+                .filter_map(|line| line.split_once(':'))
+                .find(|(name, _)| name.eq_ignore_ascii_case("content-length"))
+                .and_then(|(_, value)| value.trim().parse::<usize>().ok())
+                .unwrap_or(0);
+            while buf.len() < header_end + content_length {
+                let n = socket.read(&mut chunk).await.unwrap_or(0);
+                if n == 0 {
+                    return;
+                }
+                buf.extend_from_slice(&chunk[..n]);
+            }
+            let body = buf[header_end..header_end + content_length].to_vec();
+            seen.lock().unwrap().push((method.clone(), path.clone()));
+            tokio::time::sleep(delay).await;
+
+            let (status, payload) = match method.as_str() {
+                "PUT" if put_status == 200 => {
+                    store.lock().unwrap().insert(path, body);
+                    (200, Vec::new())
+                }
+                "PUT" => (put_status, Vec::new()),
+                "GET" => match store.lock().unwrap().get(&path) {
+                    Some(stored) => (200, stored.clone()),
+                    None => (404, Vec::new()),
+                },
+                _ => (405, Vec::new()),
+            };
+            let head = format!(
+                "HTTP/1.1 {status} X\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+                payload.len()
+            );
+            let _ = socket.write_all(head.as_bytes()).await;
+            let _ = socket.write_all(&payload).await;
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn custom_discovery_arg(url: &str) -> DiscoveryConfigArg {
+        DiscoveryConfigArg {
+            mode: "custom".to_string(),
+            pkarr_relay_url: Some(url.to_string()),
+            dns_origin: None,
+        }
+    }
+
+    /// The test must exercise the self-hosted server itself — publish and
+    /// lookup — not merely whether some relay is reachable.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[tokio::test]
+    async fn verify_discovery_publishes_then_resolves_on_the_custom_server() {
+        let (url, requests) = pkarr_server::spawn(200).await;
+
+        verify_discovery(custom_discovery_arg(&url))
+            .await
+            .expect("a working pkarr server should verify");
+
+        let requests = requests.lock().unwrap().clone();
+        assert_eq!(requests.len(), 2, "expected one PUT and one GET: {requests:?}");
+        assert_eq!(requests[0].0, "PUT");
+        assert_eq!(requests[1].0, "GET");
+        assert!(requests[0].1.starts_with("/pkarr/"));
+        assert_eq!(requests[0].1, requests[1].1);
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[tokio::test]
+    async fn verify_discovery_fails_when_the_server_rejects_publish() {
+        let (url, _requests) = pkarr_server::spawn(500).await;
+
+        let err = verify_discovery(custom_discovery_arg(&url))
+            .await
+            .expect_err("a rejected publish must not verify");
+        assert!(err.contains("publish"), "unexpected error: {err}");
+    }
+
+    /// One deadline covers PUT + GET, so a slow server can't double the wait.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[tokio::test]
+    async fn verify_discovery_shares_one_deadline_across_publish_and_lookup() {
+        let step = Duration::from_millis(300);
+        let (url, _requests) = pkarr_server::spawn_with_delay(200, step).await;
+
+        let err = verify_discovery_within(custom_discovery_arg(&url), Duration::from_millis(500))
+            .await
+            .expect_err("two 300ms steps must not fit a 500ms deadline");
+        assert!(err.contains("Timed out"), "unexpected error: {err}");
     }
 
     #[test]

@@ -242,6 +242,24 @@ pub async fn resolve_relay_mode_with_fallback(
     }
 }
 
+/// Relay mode for the long-lived device node. Unlike a one-off transfer, the
+/// node outlives a relay outage, so strict custom relays apply without a probe:
+/// iroh keeps retrying them, and failing here would leave the node on its
+/// previous (possibly public) relays. Only `public` fallback needs a probe.
+pub async fn resolve_node_relay_mode(
+    arg: Option<RelayConfigArg>,
+) -> Result<(RelayModeOption, bool), String> {
+    let fallback = arg
+        .as_ref()
+        .map(relay_fallback_policy)
+        .transpose()?
+        .unwrap_or(RelayFallbackPolicy::Strict);
+    if fallback == RelayFallbackPolicy::Public {
+        return resolve_relay_mode_with_fallback(arg).await;
+    }
+    Ok((build_relay_mode(arg)?, false))
+}
+
 /// Check which relay the app can reach, with public fallback only when selected.
 pub async fn get_relay_status(
     relay: Option<RelayConfigArg>,
@@ -548,6 +566,23 @@ mod tests {
         .expect_err("strict fallback should fail closed");
 
         assert!(err.contains("Custom relay unreachable"));
+    }
+
+    #[tokio::test]
+    async fn node_relay_mode_strict_keeps_unreachable_custom_relay() {
+        // `.invalid` never resolves: a probe would fail, and strict must not
+        // leave the node on whatever (public) relays it had before.
+        let (mode, fell_back) = resolve_node_relay_mode(Some(RelayConfigArg {
+            mode: "custom".to_string(),
+            urls: vec!["https://relay.invalid".to_string()],
+            auth_token: None,
+            fallback: Some("strict".to_string()),
+        }))
+        .await
+        .expect("strict custom relay must apply even when unreachable");
+
+        assert!(matches!(mode, RelayModeOption::Custom { .. }));
+        assert!(!fell_back);
     }
 
     #[test]
