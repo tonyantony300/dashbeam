@@ -82,12 +82,19 @@ pub async fn download(
     let db = recv_store.store;
     let mut cleanup_guard = storage::recv_cleanup_guard(recv_store.path);
     let db2 = db.clone();
+    // Once export starts moving blobs out, the store points at the user's
+    // files and cannot be resumed from; a failure past this point deletes it.
+    let moved_out = std::sync::atomic::AtomicBool::new(false);
+    let keep_for_resume = || !moved_out.load(std::sync::atomic::Ordering::Relaxed);
 
     let transfer = async {
         let downloaded =
             download_to_store(ticket, addr, &endpoint, db.as_ref(), &app_handle).await?;
 
         let export_start = std::time::Instant::now();
+        if export_mode == ExportMode::TryReference {
+            moved_out.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
         let conflicts = export_to_directory(&db, downloaded.collection, &output_dir, export_mode).await?;
         let export_duration_ms =
             protocol::duration_ms(export_start.elapsed().as_secs_f64());
@@ -121,8 +128,10 @@ pub async fn download(
     let (total_files, payload_size, _stats, conflict_count) = match select! {
         result = transfer => result,
         _ = cancel_rx => {
-            tracing::info!("Download cancelled by user — preserving partial store for resume");
-            cleanup_guard.disarm();
+            if keep_for_resume() {
+                tracing::info!("Download cancelled by user — preserving partial store for resume");
+                cleanup_guard.disarm();
+            }
             db2.shutdown().await?;
             endpoint.close().await;
             anyhow::bail!("cancelled");
@@ -140,7 +149,9 @@ pub async fn download(
         Err(e) => {
             tracing::error!("Download operation failed: {e}");
             endpoint.close().await;
-            cleanup_guard.disarm();
+            if keep_for_resume() {
+                cleanup_guard.disarm();
+            }
             db2.shutdown().await?;
             anyhow::bail!("error: {e}");
         }

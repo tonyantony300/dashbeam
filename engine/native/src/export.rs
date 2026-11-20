@@ -82,12 +82,16 @@ async fn export_blob(
         .stream()
         .await;
 
+    // Only `Done` proves the file was written: a stream that just ends means
+    // the export task died, and the caller deletes the store on success.
     while let Some(item) = stream.next().await {
-        if let ExportProgressItem::Error(cause) = item {
-            return Err(cause.to_string());
+        match item {
+            ExportProgressItem::Done => return Ok(()),
+            ExportProgressItem::Error(cause) => return Err(cause.to_string()),
+            _ => {}
         }
     }
-    Ok(())
+    Err("export ended before it completed".to_string())
 }
 
 fn resolve_conflict_path(path: &Path) -> anyhow::Result<PathBuf> {

@@ -191,3 +191,70 @@ async fn e2e_falls_back_to_temp_when_the_destination_cannot_host_the_store() {
 
     drop(share);
 }
+
+/// Export moves blobs out of the store, so a store left behind by a failed
+/// export would resume from files the user now owns. It is deleted instead.
+#[tokio::test]
+async fn e2e_failed_export_does_not_keep_the_store() {
+    let fixture = TestFixture::new();
+    let payload: Vec<u8> = (0..BIG).map(|i| (i % 233) as u8).collect();
+    let source = fixture.create_dir_with_files(
+        "broken",
+        &[
+            ("a.bin", payload.as_slice()),
+            ("sub/b.bin", payload.as_slice()),
+        ],
+    );
+    let recv_dir = fixture.output_dir();
+    // A file where `broken/sub/` must be created makes that export fail.
+    std::fs::create_dir_all(recv_dir.join("broken")).unwrap();
+    std::fs::write(recv_dir.join("broken/sub"), b"in the way").unwrap();
+
+    let share = start_share(source, send_options(), None, None)
+        .await
+        .unwrap();
+    let staged = native::storage::recv_store_dir(&hash_hex(&share.ticket), &recv_dir);
+
+    let result = receive(&share.ticket, &recv_dir).await;
+
+    assert!(result.is_err(), "the blocked export must fail the receive");
+    assert!(
+        wait_until_gone(&staged).await,
+        "a partly exported store must not be kept for resume"
+    );
+
+    drop(share);
+}
+
+/// A leftover store that can no longer be opened is removed when the receive
+/// falls back to the temp dir, not orphaned in the destination.
+#[tokio::test]
+async fn e2e_unusable_leftover_store_is_removed_on_fallback() {
+    let fixture = TestFixture::new();
+    let payload: Vec<u8> = (0..BIG).map(|i| (i % 229) as u8).collect();
+    let source = fixture.create_file("leftover.bin", &payload);
+    let recv_dir = fixture.output_dir();
+
+    let share = start_share(source, send_options(), None, None)
+        .await
+        .unwrap();
+    let hash = hash_hex(&share.ticket);
+    let staged = native::storage::recv_store_dir(&hash, &recv_dir);
+    // A directory where the probe file goes makes the store fail to open.
+    std::fs::create_dir_all(staged.join(".probe")).unwrap();
+    let in_temp = native::storage::temp_recv_store_dir(&hash);
+
+    receive(&share.ticket, &recv_dir).await.expect("download");
+
+    assert_eq!(
+        std::fs::read(recv_dir.join("leftover.bin")).unwrap(),
+        payload
+    );
+    assert!(!staged.exists(), "the unusable store must be removed");
+    assert!(
+        wait_until_gone(&in_temp).await,
+        "temp store should be removed"
+    );
+
+    drop(share);
+}

@@ -70,7 +70,6 @@ pub async fn create_recv_store(hash_hex: &str, output_dir: &Path) -> anyhow::Res
     let fallback = temp_recv_store_dir(hash_hex);
     let staged = recv_store_dir(hash_hex, output_dir);
     if staged != fallback {
-        let existed = staged.exists();
         match open_store(&staged).await {
             Ok(store) => {
                 hide_dir(&staged);
@@ -85,9 +84,9 @@ pub async fn create_recv_store(hash_hex: &str, output_dir: &Path) -> anyhow::Res
                     "cannot stage receive in {}, using the temp dir: {e:#}",
                     staged.display()
                 );
-                if !existed {
-                    let _ = tokio::fs::remove_dir_all(&staged).await;
-                }
+                // Unusable, and nothing will resume from it: a leftover here
+                // would be orphaned once the temp-dir receive succeeds.
+                let _ = tokio::fs::remove_dir_all(&staged).await;
             }
         }
     }
