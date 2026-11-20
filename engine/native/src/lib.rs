@@ -14,6 +14,7 @@ pub mod receive;
 pub mod runtime;
 pub mod secret_store;
 pub mod send;
+pub mod staged_stores;
 pub mod storage;
 pub mod types;
 
@@ -29,6 +30,7 @@ pub use history::{
     is_reclaimable_partial, partial_store_hash, reclaim_partial, TransferDirection,
     TransferHistoryStore, TransferPathType, TransferPeer, TransferRecord, TransferStatus,
 };
+pub use staged_stores::StagedStores;
 pub use nearby::{NearbyDevice, NearbyRegistry, ObserveOutcome};
 pub use node::NodeService;
 pub use receive::download;

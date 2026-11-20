@@ -75,6 +75,16 @@ fn init_transfer_history(app: &tauri::App) {
         }
     };
 
+    // Partial stores staged in destination folders are outside the temp scan;
+    // the list of them is swept here, before history is reconciled against
+    // what is left on disk.
+    let staged = Arc::new(engine::StagedStores::new(&data_dir));
+    match staged.sweep() {
+        0 => {}
+        n => tracing::info!("removed {n} leftover partial receive store(s)"),
+    }
+    app.manage(staged);
+
     let history = Arc::new(engine::TransferHistoryStore::new(&data_dir));
     match history.mark_interrupted() {
         Ok(0) => {}
