@@ -68,23 +68,27 @@ pub fn unregister() -> anyhow::Result<()> {
 }
 
 fn scripts_dir() -> Option<PathBuf> {
+    // Under Flatpak `XDG_DATA_HOME` points into the sandbox; Flatpak passes
+    // the host's value (when the host sets one) as `HOST_XDG_DATA_HOME`. The
+    // manifest's `xdg-data/nautilus/scripts` grant follows the host value too.
+    let var = if std::env::var_os("FLATPAK_ID").is_some() {
+        "HOST_XDG_DATA_HOME"
+    } else {
+        "XDG_DATA_HOME"
+    };
     data_home(
-        std::env::var_os("XDG_DATA_HOME").as_deref(),
+        std::env::var_os(var).as_deref(),
         std::env::var_os("HOME").as_deref(),
     )
     .map(|data| data.join("nautilus").join("scripts"))
 }
 
-/// `$XDG_DATA_HOME`, or `~/.local/share`. Relative values are invalid per the
-/// XDG spec and ignored. Under Flatpak `XDG_DATA_HOME` points into the sandbox,
-/// so the host's `~/.local/share` is used instead (the manifest grants it).
+/// The host's `$XDG_DATA_HOME`, or `~/.local/share`. Relative values are
+/// invalid per the XDG spec and ignored.
 fn data_home(xdg_data_home: Option<&OsStr>, home: Option<&OsStr>) -> Option<PathBuf> {
-    let in_flatpak = std::env::var_os("FLATPAK_ID").is_some();
-    if !in_flatpak {
-        if let Some(path) = xdg_data_home.map(PathBuf::from) {
-            if path.is_absolute() {
-                return Some(path);
-            }
+    if let Some(path) = xdg_data_home.map(PathBuf::from) {
+        if path.is_absolute() {
+            return Some(path);
         }
     }
     let home = PathBuf::from(home?);
@@ -178,7 +182,7 @@ fn render_script(launcher: &Launcher) -> String {
 # remove it; edits are overwritten the next time DashBeam starts.
 
 # DashBeam was uninstalled or moved: clean up instead of failing.
-if ! {installed_check}; then
+if ! {{ {installed_check}; }}; then
 	rm -f -- "$0"
 	exit 0
 fi
@@ -305,9 +309,6 @@ mod tests {
 
     #[test]
     fn resolves_data_home() {
-        if std::env::var_os("FLATPAK_ID").is_some() {
-            return;
-        }
         assert_eq!(
             data_home(os("/data"), os("/home/u")),
             Some(PathBuf::from("/data"))
@@ -376,11 +377,84 @@ mod tests {
     }
 
     fn run_script(script: &Path, selection: &str) -> std::process::Output {
-        Command::new("/bin/sh")
+        run_script_with_path(script, selection, None)
+    }
+
+    fn run_script_with_path(
+        script: &Path,
+        selection: &str,
+        path: Option<&Path>,
+    ) -> std::process::Output {
+        let mut command = Command::new("/bin/sh");
+        command
             .arg(script)
-            .env("NAUTILUS_SCRIPT_SELECTED_FILE_PATHS", selection)
-            .output()
-            .unwrap()
+            .env("NAUTILUS_SCRIPT_SELECTED_FILE_PATHS", selection);
+        if let Some(path) = path {
+            command.env("PATH", path);
+        }
+        command.output().unwrap()
+    }
+
+    /// A stand-in `flatpak` whose `info` succeeds only when `installed`, and
+    /// which records the arguments of `run` in `args.log` beside it.
+    fn fake_flatpak(dir: &Path, installed: bool) {
+        let bin = dir.join("bin");
+        fs::create_dir_all(&bin).unwrap();
+        let log = shell_quote(dir.join("args.log").to_str().unwrap());
+        let info_status = if installed { 0 } else { 1 };
+        let flatpak = bin.join("flatpak");
+        fs::write(
+            &flatpak,
+            format!(
+                "#!/bin/sh\ncase \"$1\" in\n\
+                 info) exit {info_status} ;;\n\
+                 run) shift; printf '%s\\n' \"$@\" > {log} ;;\n\
+                 esac\n"
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&flatpak, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    fn sh_path(dir: &Path) -> PathBuf {
+        // The fake flatpak first, then the system tools the script needs.
+        let system = std::env::var_os("PATH").unwrap_or_else(|| "/usr/bin:/bin".into());
+        let mut dirs = vec![dir.join("bin")];
+        dirs.extend(std::env::split_paths(&system));
+        PathBuf::from(std::env::join_paths(dirs).unwrap())
+    }
+
+    #[test]
+    fn flatpak_script_launches_while_installed() {
+        let dir = TempDir::new("flatpak-installed");
+        fake_flatpak(&dir.0, true);
+        let scripts = dir.0.join("scripts");
+        let launcher = Launcher::Flatpak("net.dashbeam.DashBeam".into());
+        write_script(&scripts, &render_script(&launcher)).unwrap();
+        let script = scripts.join(SCRIPT_NAME);
+
+        let output = run_script_with_path(&script, "/home/u/file\n", Some(&sh_path(&dir.0)));
+        assert!(output.status.success(), "{output:?}");
+        assert!(script.exists());
+        assert_eq!(
+            fs::read_to_string(dir.0.join("args.log")).unwrap(),
+            "--file-forwarding\nnet.dashbeam.DashBeam\n@@\n/home/u/file\n@@\n"
+        );
+    }
+
+    #[test]
+    fn flatpak_script_removes_itself_once_uninstalled() {
+        let dir = TempDir::new("flatpak-orphan");
+        fake_flatpak(&dir.0, false);
+        let scripts = dir.0.join("scripts");
+        let launcher = Launcher::Flatpak("net.dashbeam.DashBeam".into());
+        write_script(&scripts, &render_script(&launcher)).unwrap();
+        let script = scripts.join(SCRIPT_NAME);
+
+        let output = run_script_with_path(&script, "/home/u/file", Some(&sh_path(&dir.0)));
+        assert!(output.status.success(), "{output:?}");
+        assert!(!script.exists());
+        assert!(!dir.0.join("args.log").exists());
     }
 
     #[test]
