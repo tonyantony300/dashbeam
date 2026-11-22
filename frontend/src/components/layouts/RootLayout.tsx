@@ -10,7 +10,8 @@ import { NearbyPairRequestDialog } from '../pairing/NearbyPairRequestDialog'
 import { NearbyVerificationDialog } from '../pairing/NearbyVerificationDialog'
 import { PairedInviteDialog } from '../pairing/PairedInviteDialog'
 import { ReceiverProvider } from '../receiver/ReceiverProvider'
-import { WindowsContextMenuSync } from '../settings/system-tray/context-menu-toggle'
+import { ContextMenuSync } from '../settings/system-tray/context-menu-toggle'
+import { HAS_CONTEXT_MENU_PLATFORM } from '@/hooks/use-context-menu-support'
 import { useIsWindowsPortable } from '@/hooks/use-windows-portable'
 import { useAutostartFirstRun } from '../../hooks/useAutostartFirstRun'
 import { useTrayLabels } from '../../hooks/useTrayLabels'
@@ -21,7 +22,6 @@ import {
 	IS_PAIRING_CAPABLE,
 	IS_UPDATER_AVAILABLE,
 	IS_WEB,
-	IS_WINDOWS,
 } from '@/lib/platform'
 
 export function RootLayout() {
@@ -34,7 +34,7 @@ export function RootLayout() {
 			{/* Mounts the periodic check as well as the banner, so this gate decides
 			    whether the app checks for updates at all — Android included. */}
 			{IS_UPDATER_AVAILABLE && !isWindowsPortable && <AppUpdater />}
-			{IS_WINDOWS && <WindowsContextMenuSync />}
+			{HAS_CONTEXT_MENU_PLATFORM && <ContextMenuSync />}
 			{IS_PAIRING_CAPABLE && <DeviceNodeSync />}
 			{IS_PAIRING_CAPABLE && <PairedInviteDialog />}
 			{IS_PAIRING_CAPABLE && <NearbyInviteDialog />}

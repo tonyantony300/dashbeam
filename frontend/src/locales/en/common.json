@@ -286,7 +286,11 @@
 				},
 				"contextMenu": {
 					"label": "Explorer context menu",
-					"description": "Add 'Send with DashBeam' to the Windows Explorer right-click menu"
+					"description": "Add 'Send with DashBeam' to the Windows Explorer right-click menu",
+					"linux": {
+						"label": "Files right-click menu",
+						"description": "Add 'Send with DashBeam' to the Scripts menu when right-clicking in GNOME Files (Nautilus)"
+					}
 				}
 			},
 			"broadcast": {

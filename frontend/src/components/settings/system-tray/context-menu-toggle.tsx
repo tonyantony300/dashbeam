@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { IS_LINUX } from '@/lib/platform'
 import { invoke } from '@/lib/platform-api'
 import { useTranslation } from '../../../i18n'
 import { useAppSettingStore } from '../../../store/app-setting'
@@ -13,11 +14,13 @@ async function applyContextMenu(
 }
 
 /**
- * Keeps the Explorer shell verb in sync with the persisted setting.
+ * Keeps the file manager entry (Windows Explorer verb, or the Nautilus script
+ * on Linux) in sync with the persisted setting.
  * Runs once after settings hydrate so first launch (default: on) registers
  * without requiring a visit to Settings, and so disable survives restarts.
+ * On Linux desktops without Nautilus, enabling is a backend no-op.
  */
-export function WindowsContextMenuSync() {
+export function ContextMenuSync() {
 	useEffect(() => {
 		let cancelled = false
 
@@ -26,7 +29,7 @@ export function WindowsContextMenuSync() {
 			const enabled = useAppSettingStore.getState().windowsContextMenu
 			// Quiet sync: never prompt for UAC on launch.
 			applyContextMenu(enabled, false).catch((e) =>
-				console.error('Failed to sync Explorer context menu:', e)
+				console.error('Failed to sync file manager context menu:', e)
 			)
 		}
 
@@ -68,22 +71,23 @@ export function ContextMenuToggle() {
 			const message =
 				e instanceof Error ? e.message : typeof e === 'string' ? e : String(e)
 			setError(message)
-			console.error('Failed to toggle Explorer context menu:', e)
+			console.error('Failed to toggle file manager context menu:', e)
 		} finally {
 			setPending(false)
 		}
 	}
 
+	// Linux has its own strings: the entry lives under Files' Scripts submenu.
+	const keyPrefix = IS_LINUX
+		? 'settings.general.systembar.contextMenu.linux'
+		: 'settings.general.systembar.contextMenu'
+
 	return (
 		<div className="flex flex-col gap-1">
 			<div className="flex items-center justify-between">
 				<div className="flex-1">
-					<FrameTitle>
-						{t('settings.general.systembar.contextMenu.label')}
-					</FrameTitle>
-					<FrameDescription>
-						{t('settings.general.systembar.contextMenu.description')}
-					</FrameDescription>
+					<FrameTitle>{t(`${keyPrefix}.label`)}</FrameTitle>
+					<FrameDescription>{t(`${keyPrefix}.description`)}</FrameDescription>
 				</div>
 				<Switch
 					checked={enabled}

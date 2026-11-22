@@ -186,6 +186,7 @@ pub fn run() {
             verify_discovery,
             get_relay_status,
             toggle_context_menu,
+            is_context_menu_supported,
             is_windows_portable,
             get_debug_logging,
             set_debug_logging,

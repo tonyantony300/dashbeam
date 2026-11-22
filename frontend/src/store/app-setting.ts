@@ -19,6 +19,11 @@ export type AppSettingsState = {
 	showProgressOnIcon: boolean
 	downloadsPath: string
 	downloadsUri: string
+	/**
+	 * File manager right-click entry: the Explorer verb on Windows, the GNOME
+	 * Files (Nautilus) script on Linux. Key kept from the Windows-only days so
+	 * existing settings files keep working.
+	 */
 	windowsContextMenu: boolean
 	relayMode: 'default' | 'custom' | 'disabled'
 	relayUrls: string[]
