@@ -26,6 +26,9 @@ const SCRIPT_NAME: &str = "Send with DashBeam";
 /// recognise their own scripts by it.
 const MARKER: &str = "# managed-by: dashbeam";
 
+/// Nautilus only lists executable scripts.
+const SCRIPT_MODE: u32 = 0o755;
+
 /// How the script starts DashBeam, decided by how this copy was installed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Launcher {
@@ -211,7 +214,13 @@ fn write_script(dir: &Path, content: &str) -> anyhow::Result<()> {
             target.display()
         );
     }
-    if fs::read_to_string(&target).ok().as_deref() == Some(content) {
+    // Skip only when nothing would change: a script whose execute bit was
+    // removed is no longer listed by Nautilus, so rewrite it then too.
+    let mode_ok = target
+        .symlink_metadata()
+        .map(|meta| meta.is_file() && meta.permissions().mode() & 0o777 == SCRIPT_MODE)
+        .unwrap_or(false);
+    if mode_ok && fs::read_to_string(&target).ok().as_deref() == Some(content) {
         return Ok(());
     }
 
@@ -224,7 +233,7 @@ fn write_script(dir: &Path, content: &str) -> anyhow::Result<()> {
         let mut file = fs::File::create(&tmp)
             .with_context(|| format!("could not write to {}", dir.display()))?;
         file.write_all(content.as_bytes())?;
-        file.set_permissions(fs::Permissions::from_mode(0o755))?;
+        file.set_permissions(fs::Permissions::from_mode(SCRIPT_MODE))?;
         file.sync_all()?;
         fs::rename(&tmp, &target)
             .with_context(|| format!("could not create {}", target.display()))?;
@@ -359,6 +368,22 @@ mod tests {
         assert!(!target.exists());
         // Removing again is fine.
         remove_script(&scripts).unwrap();
+    }
+
+    #[test]
+    fn restores_lost_execute_bit_on_unchanged_script() {
+        let dir = TempDir::new("chmod");
+        let script = render_script(&Launcher::Executable("/usr/bin/DashBeam".into()));
+        write_script(&dir.0, &script).unwrap();
+        let target = dir.0.join(SCRIPT_NAME);
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o644)).unwrap();
+
+        write_script(&dir.0, &script).unwrap();
+        assert_eq!(
+            fs::metadata(&target).unwrap().permissions().mode() & 0o777,
+            SCRIPT_MODE
+        );
+        assert_eq!(fs::read_dir(&dir.0).unwrap().count(), 1);
     }
 
     #[test]
