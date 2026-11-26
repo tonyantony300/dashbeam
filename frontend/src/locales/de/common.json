@@ -256,7 +256,11 @@
 				},
 				"contextMenu": {
 					"label": "Kontextmenü im Explorer",
-					"description": "„Mit DashBeam senden“ zum Rechtsklickmenü im Windows-Explorer hinzufügen"
+					"description": "„Mit DashBeam senden“ zum Rechtsklickmenü im Windows-Explorer hinzufügen",
+					"linux": {
+						"label": "Rechtsklickmenü in Dateien",
+						"description": "„Send with DashBeam“ zum Skripte-Menü beim Rechtsklick in GNOME Dateien (Nautilus) hinzufügen"
+					}
 				}
 			},
 			"broadcast": {

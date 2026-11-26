@@ -285,6 +285,7 @@ function invokeWebStub<T>(cmd: string, args?: Record<string, unknown>): T {
 		case 'plugin:native-utils|open_download_folder':
 			return null as T
 		case 'is_windows_portable':
+		case 'is_context_menu_supported':
 			return false as T
 		case 'check_android_update':
 			return null as T

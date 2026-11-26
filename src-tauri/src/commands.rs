@@ -1014,10 +1014,38 @@ pub async fn toggle_context_menu(
             .map_err(|e| e.to_string())
         }
     }
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(target_os = "linux")]
+    {
+        // Linux has no machine-wide leftovers, so elevation never applies.
+        if enable {
+            crate::platform::linux::nautilus::register()
+        } else {
+            crate::platform::linux::nautilus::unregister()
+        }
+        .map_err(|e| e.to_string())
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "linux")))]
     {
         let _ = enable;
         Ok(())
+    }
+}
+
+/// Whether this desktop has a file manager the context-menu toggle can
+/// integrate with: always Explorer on Windows, Nautilus on Linux when detected.
+#[tauri::command]
+pub fn is_context_menu_supported() -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        true
+    }
+    #[cfg(target_os = "linux")]
+    {
+        crate::platform::linux::nautilus::is_supported()
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "linux")))]
+    {
+        false
     }
 }
 
