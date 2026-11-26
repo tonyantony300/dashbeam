@@ -1,7 +1,7 @@
 mod common;
 
 use common::{MockEventEmitter, TestFixture};
-use engine::{download, start_share, ReceiveOptions, SendOptions};
+use engine::{download, start_share, ReceiveOptions};
 use std::str::FromStr;
 
 /// Where the receiver stages blobs for this ticket: a hash-named store inside
@@ -58,7 +58,7 @@ async fn e2e_sender_temp_dir_cleanup() {
     let fixture = TestFixture::new();
     let source = fixture.create_file("dummy.txt", b"dummy content");
 
-    let share = start_share(source, SendOptions::default(), None, None)
+    let share = start_share(source, common::send_options_with_addresses(), None, None)
         .await
         .expect("start_share should succeed");
 
@@ -89,7 +89,7 @@ async fn e2e_receiver_temp_dir_preserved_on_failure() {
     // Start a real share to get a valid ticket, then drop the sender so the
     // download fails when it tries to connect.
     let source = fixture.create_file("fail.txt", b"will fail");
-    let share = start_share(source, SendOptions::default(), None, None)
+    let share = start_share(source, common::send_options_with_addresses(), None, None)
         .await
         .unwrap();
     let ticket = share.ticket.clone();
@@ -124,7 +124,7 @@ async fn e2e_receiver_temp_dir_removed_on_success() {
     let source = fixture.create_file("success.txt", b"completed transfer payload");
     let recv_dir = fixture.output_dir();
 
-    let share = start_share(source, SendOptions::default(), None, None)
+    let share = start_share(source, common::send_options_with_addresses(), None, None)
         .await
         .unwrap();
     let ticket = share.ticket.clone();
@@ -166,7 +166,7 @@ async fn e2e_cancel_preserves_partial_store() {
     let fixture = TestFixture::new();
     let source = fixture.create_file("cancel_test.txt", b"content to be cancelled");
 
-    let share = start_share(source, SendOptions::default(), None, None)
+    let share = start_share(source, common::send_options_with_addresses(), None, None)
         .await
         .unwrap();
     let ticket = share.ticket.clone();
@@ -212,7 +212,7 @@ async fn e2e_same_ticket_resumes_after_cancel() {
     let source = fixture.create_file("resume.txt", b"resume after cancel content");
     let recv_dir = fixture.output_dir();
 
-    let share = start_share(source, SendOptions::default(), None, None)
+    let share = start_share(source, common::send_options_with_addresses(), None, None)
         .await
         .unwrap();
     let ticket = share.ticket.clone();
@@ -280,9 +280,14 @@ async fn e2e_receiver_resumes_partial_download() {
     let source = fixture.create_large_file("big.bin", size);
     let recv_dir = fixture.output_dir();
 
-    let share = start_share(source.clone(), SendOptions::default(), None, None)
-        .await
-        .unwrap();
+    let share = start_share(
+        source.clone(),
+        common::send_options_with_addresses(),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
     let ticket = share.ticket.clone();
     let expected_path = receiver_temp_dir(&ticket, &recv_dir);
     // Start clean so the partial-size assertion is meaningful.
@@ -338,7 +343,7 @@ async fn e2e_receiver_resumes_partial_download() {
     // Re-share the same content. The node id (and thus the full ticket string)
     // differs per session, but the content hash — which keys the staging dir — is
     // the same, so the retry targets the preserved partial store.
-    let share2 = start_share(source, SendOptions::default(), None, None)
+    let share2 = start_share(source, common::send_options_with_addresses(), None, None)
         .await
         .unwrap();
     assert_eq!(

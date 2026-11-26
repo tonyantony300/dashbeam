@@ -13,6 +13,8 @@ mod autostart_portal;
 mod commands;
 mod features;
 mod history;
+#[cfg(target_os = "linux")]
+mod local_control;
 mod logging;
 mod platform;
 #[cfg(target_os = "android")]
@@ -351,6 +353,10 @@ pub fn run() {
                         }
                     }
                 }
+            }
+            #[cfg(target_os = "linux")]
+            if let Err(error) = local_control::start(app.handle().clone()) {
+                tracing::warn!(%error, "local control unavailable; app will continue without it");
             }
             Ok(())
         });

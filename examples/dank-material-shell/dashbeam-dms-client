@@ -1,0 +1,43 @@
+#!/usr/bin/python3
+"""JSON line client for DashBeam's private local socket; never executes a shell."""
+
+import json, os, socket, sys, subprocess
+from pathlib import Path
+
+
+def main():
+    req = json.loads(sys.argv[1]) if len(sys.argv) > 1 else {"action": "status"}
+    if req.get("action") == "start":
+        subprocess.run(
+            ["systemctl", "--user", "start", "dashbeam-dms.service"],
+            check=True,
+            timeout=20,
+        )
+        return {"ok": True, "data": {"started": True}}
+    if req.get("action") == "copy":
+        subprocess.run(
+            ["wl-copy"], input=req.get("text", "").encode(), check=True, timeout=5
+        )
+        return {"ok": True, "data": True}
+    path = Path(os.environ["XDG_RUNTIME_DIR"]) / "dashbeam/control.sock"
+    with socket.socket(socket.AF_UNIX) as s:
+        s.settimeout(120 if req.get("action") == "send" else 15)
+        s.connect(str(path))
+        s.sendall(json.dumps(req).encode() + b"\n")
+        raw = bytearray()
+        while b"\n" not in raw:
+            chunk = s.recv(65536)
+            if not chunk:
+                raise RuntimeError("Connection closed")
+            raw.extend(chunk)
+            if len(raw) > 8 * 1024 * 1024:
+                raise RuntimeError("Response too large")
+        return json.loads(raw.partition(b"\n")[0])
+
+
+if __name__ == "__main__":
+    try:
+        print(json.dumps(main(), ensure_ascii=False))
+    except Exception as e:
+        print(json.dumps({"ok": False, "error": str(e)}, ensure_ascii=False))
+        sys.exit(1)

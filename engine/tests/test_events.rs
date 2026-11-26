@@ -1,7 +1,7 @@
 mod common;
 
 use common::{MockEventEmitter, TestFixture};
-use engine::{download, start_share, ReceiveOptions, SendOptions};
+use engine::{download, start_share, ReceiveOptions};
 
 #[tokio::test]
 async fn e2e_receiver_event_sequence() {
@@ -11,7 +11,7 @@ async fn e2e_receiver_event_sequence() {
 
     let receiver_emitter = MockEventEmitter::new();
 
-    let share = start_share(source, SendOptions::default(), None, None)
+    let share = start_share(source, common::send_options_with_addresses(), None, None)
         .await
         .expect("start_share should succeed");
 
@@ -72,7 +72,7 @@ async fn e2e_sender_events_on_transfer() {
 
     let share = start_share(
         source,
-        SendOptions::default(),
+        common::send_options_with_addresses(),
         Some(sender_emitter.clone()),
         None,
     )

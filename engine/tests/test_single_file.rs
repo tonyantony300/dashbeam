@@ -1,7 +1,7 @@
 mod common;
 
 use common::{MockEventEmitter, TestFixture};
-use engine::{download, start_share, ReceiveOptions, SendOptions};
+use engine::{download, start_share, ReceiveOptions};
 
 #[tokio::test]
 async fn e2e_single_text_file_roundtrip() {
@@ -12,7 +12,7 @@ async fn e2e_single_text_file_roundtrip() {
     let sender_emitter = MockEventEmitter::new();
     let share = start_share(
         source,
-        SendOptions::default(),
+        common::send_options_with_addresses(),
         Some(sender_emitter.clone()),
         None,
     )
@@ -64,7 +64,7 @@ async fn e2e_binary_file_roundtrip() {
     let source = fixture.create_file("data.bin", &binary_data);
     let recv_dir = fixture.output_dir();
 
-    let share = start_share(source, SendOptions::default(), None, None)
+    let share = start_share(source, common::send_options_with_addresses(), None, None)
         .await
         .expect("start_share should succeed");
 
@@ -94,7 +94,7 @@ async fn e2e_empty_file_roundtrip() {
     let source = fixture.create_file("empty.txt", b"");
     let recv_dir = fixture.output_dir();
 
-    let share = start_share(source, SendOptions::default(), None, None)
+    let share = start_share(source, common::send_options_with_addresses(), None, None)
         .await
         .expect("start_share should succeed");
 
