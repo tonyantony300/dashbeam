@@ -42,6 +42,53 @@ const MAX_ENABLED_AGE_SECS: u64 = 7 * 24 * 60 * 60;
 const DEBUG_FILTER: &str = "iroh::_events=debug,protocol=debug,native=debug,engine=debug,\
      dashbeam=debug,dashbeam_lib=debug";
 
+/// Filter for the debug-mode log file: `DEBUG_FILTER` events, plus every
+/// iroh *span*. iroh logs relay events from actor tasks under trace-level spans
+/// (`endpoint{id=..}:relay-actor:..`); dropping those breaks the chain, and the
+/// node, transfer and probe endpoints become indistinguishable.
+fn debug_file_filter<S>() -> impl tracing_subscriber::layer::Filter<S>
+where
+    S: tracing::Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a>,
+{
+    use tracing_subscriber::filter::{filter_fn, FilterExt as _};
+
+    EnvFilter::new(DEBUG_FILTER).or(filter_fn(|meta| {
+        meta.is_span() && (meta.target() == "iroh" || meta.target().starts_with("iroh::"))
+    }))
+}
+
+/// `DefaultFields` under its own type. fmt layers cache formatted span fields
+/// per formatter type, so sharing `DefaultFields` with the ANSI stdout layer
+/// would write its escape codes into the log file.
+#[derive(Default)]
+struct PlainFields(fmt::format::DefaultFields);
+
+impl<'writer> fmt::FormatFields<'writer> for PlainFields {
+    fn format_fields<R: tracing_subscriber::field::RecordFields>(
+        &self,
+        writer: fmt::format::Writer<'writer>,
+        fields: R,
+    ) -> std::fmt::Result {
+        self.0.format_fields(writer, fields)
+    }
+}
+
+/// The debug-mode file sink: plain text, `debug_file_filter`.
+fn debug_file_layer<S, W>(writer: W) -> impl tracing_subscriber::Layer<S>
+where
+    S: tracing::Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a>,
+    W: for<'w> fmt::MakeWriter<'w> + Send + Sync + 'static,
+{
+    fmt::layer()
+        .fmt_fields(PlainFields::default())
+        .with_writer(writer)
+        .with_ansi(false)
+        .with_target(true)
+        .with_thread_ids(true)
+        .with_line_number(true)
+        .with_filter(debug_file_filter())
+}
+
 /// Keeps the non-blocking writer's worker thread alive for the process lifetime.
 /// Dropping this silently discards buffered lines.
 static GUARD: OnceLock<WorkerGuard> = OnceLock::new();
@@ -154,15 +201,7 @@ pub fn init(config_dir: &Path, log_dir: &Path) {
                 let _ = GUARD.set(guard);
                 let _ = SESSION_FILE.set(path);
                 ACTIVE.store(true, Ordering::Relaxed);
-                Some(
-                    fmt::layer()
-                        .with_writer(non_blocking)
-                        .with_ansi(false)
-                        .with_target(true)
-                        .with_thread_ids(true)
-                        .with_line_number(true)
-                        .with_filter(EnvFilter::new(DEBUG_FILTER)),
-                )
+                Some(debug_file_layer(non_blocking))
             }
             Err(error) => {
                 eprintln!("debug logging: could not open log file: {error}");
@@ -363,6 +402,91 @@ mod filter_tests {
                 );
             })+
         };
+    }
+
+    #[derive(Clone, Default)]
+    struct Captured(Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl std::io::Write for Captured {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// iroh emits relay events from actor tasks under
+    /// `endpoint{id=..}:relay-actor:...`, where the inner spans are trace level.
+    /// If the filter drops those, the chain breaks and every endpoint (node,
+    /// transfer, probe) looks alike — a self-hoster can't tell which one is
+    /// talking to public relays.
+    #[test]
+    fn debug_file_filter_keeps_endpoint_id_on_iroh_actor_events() {
+        let captured = Captured::default();
+        let writer = captured.clone();
+        let subscriber =
+            tracing_subscriber::registry().with(super::debug_file_layer(move || writer.clone()));
+
+        tracing::subscriber::with_default(subscriber, || {
+            let endpoint =
+                tracing::info_span!(target: "iroh::endpoint", "endpoint", id = %"abc123");
+            let actor = tracing::trace_span!(
+                target: "iroh::socket::transports::relay::actor",
+                parent: &endpoint,
+                "relay-actor"
+            );
+            actor.in_scope(|| {
+                tracing::debug!(target: "iroh::_events::relay::connected", url = "https://relay.example");
+                tracing::trace!(target: "iroh::socket", "internal noise");
+            });
+        });
+
+        let output = String::from_utf8(captured.0.lock().unwrap().clone()).unwrap();
+        let line = output
+            .lines()
+            .find(|line| line.contains("iroh::_events::relay::connected"))
+            .expect("relay event should be logged");
+        assert!(
+            line.contains("endpoint{id=abc123}"),
+            "missing endpoint id: {line}"
+        );
+        assert!(
+            !output.contains("internal noise"),
+            "iroh internals leaked: {output}"
+        );
+    }
+
+    /// fmt layers cache formatted span fields per field-formatter type, so the
+    /// ANSI stdout layer must not colour the span fields the file writes.
+    #[test]
+    fn debug_file_layer_stays_plain_text_beside_ansi_stdout() {
+        let captured = Captured::default();
+        let writer = captured.clone();
+        let subscriber = tracing_subscriber::registry()
+            .with(
+                tracing_subscriber::fmt::layer()
+                    .with_writer(std::io::sink)
+                    .with_ansi(true),
+            )
+            .with(super::debug_file_layer(move || writer.clone()));
+
+        tracing::subscriber::with_default(subscriber, || {
+            let _endpoint =
+                tracing::info_span!(target: "iroh::endpoint", "endpoint", id = %"abc123").entered();
+            tracing::debug!(target: "iroh::_events::relay::connected", url = "https://relay.example");
+        });
+
+        let output = String::from_utf8(captured.0.lock().unwrap().clone()).unwrap();
+        assert!(
+            output.contains("endpoint{id=abc123}"),
+            "unexpected output: {output:?}"
+        );
+        assert!(
+            !output.contains('\u{1b}'),
+            "ANSI escapes in log file: {output:?}"
+        );
     }
 
     /// A target the filter drops is silently missing from bug-report logs, with
